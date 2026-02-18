@@ -29,6 +29,10 @@ func main() {
 		})
 	})
 
+	e.GET("/rooms", func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, rooms.List())
+	})
+
 	e.POST("/rooms", func(c *echo.Context) error {
 		var req struct {
 			Name string `json:"name"`

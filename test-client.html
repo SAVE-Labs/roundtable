@@ -102,7 +102,9 @@
         <div class="row">
             <input id="roomId" placeholder="Room UUID" />
             <button onclick="joinRoom()">Join</button>
+            <button onclick="loadRooms()">Refresh</button>
         </div>
+        <div id="roomList" style="margin-top:8px"></div>
     </div>
 
     <div id="status" class="status">Status: Not connected</div>
@@ -172,6 +174,24 @@
             if (!id) return;
             await connect(id);
         }
+
+        async function loadRooms() {
+            const list = document.getElementById('roomList');
+            try {
+                const resp = await fetch(`${BASE}/rooms`);
+                const rooms = await resp.json();
+                if (!rooms.length) { list.innerHTML = '<p style="color:#777;font-size:14px">No rooms yet.</p>'; return; }
+                list.innerHTML = rooms.map(r =>
+                    `<div class="peer-audio" style="cursor:pointer" onclick="document.getElementById('roomId').value='${r.id}'">
+                        <div class="dot"></div><span>${r.name}</span><span style="color:#777;font-size:12px;margin-left:auto">${r.id}</span>
+                    </div>`
+                ).join('');
+            } catch (e) {
+                list.innerHTML = '<p style="color:#c0392b;font-size:14px">Failed to load rooms.</p>';
+            }
+        }
+
+        loadRooms();
 
         async function connect(roomId) {
             try {

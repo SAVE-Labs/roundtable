@@ -81,3 +81,13 @@ func (rr *RoomRegistry) Get(id string) (*Room, bool) {
 	r, ok := rr.rooms[id]
 	return r, ok
 }
+
+func (rr *RoomRegistry) List() []map[string]string {
+	rr.mu.RLock()
+	defer rr.mu.RUnlock()
+	list := make([]map[string]string, 0, len(rr.rooms))
+	for _, r := range rr.rooms {
+		list = append(list, map[string]string{"id": r.id, "name": r.name})
+	}
+	return list
+}
