@@ -8,7 +8,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-func handleWebRTCOffer(offer webrtc.SessionDescription, registry *ConnectionRegistry) (*webrtc.SessionDescription, error) {
+func handleWebRTCOffer(offer webrtc.SessionDescription, room *Room, peer *Peer) (*webrtc.SessionDescription, error) {
 	// Create a MediaEngine object to configure the supported codec
 	mediaEngine := &webrtc.MediaEngine{}
 
@@ -61,53 +61,53 @@ func handleWebRTCOffer(offer webrtc.SessionDescription, registry *ConnectionRegi
 		panic(err)
 	}
 
-	id := fmt.Sprintf("%p", peerConnection)
-	registry.Add(id, peerConnection)
+	peer.pc = peerConnection
 
-	// Create Track that we send audio back on
-	outputTrack, err := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{
-			MimeType:  webrtc.MimeTypeOpus,
-			ClockRate: 48000,
-			Channels:  2,
-		},
-		"audio",
-		"pion",
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	// Add this newly created track to the PeerConnection
-	rtpSender, err := peerConnection.AddTrack(outputTrack)
-	if err != nil {
-		panic(err)
-	}
-
-	// Read incoming RTCP packets
-	// Before these packets are returned they are processed by interceptors. For things
-	// like NACK this needs to be called.
-	go func() {
-		rtcpBuf := make([]byte, 1500)
-		for {
-			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-				return
-			}
+	// Add all existing peers' tracks to this new peer's connection before answering
+	room.mu.RLock()
+	for _, localTrack := range room.localTracks {
+		sender, err := peerConnection.AddTrack(localTrack)
+		if err != nil {
+			room.mu.RUnlock()
+			return nil, fmt.Errorf("failed to add existing track: %w", err)
 		}
-	}()
+		go drainRTCP(sender)
+	}
+	room.mu.RUnlock()
 
-	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
-	// replaces the SSRC and sends them back
+	room.AddPeer(peer)
+
+	// Set a handler for when a new remote track starts; forward it to all other peers
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) { //nolint: revive
 		fmt.Printf("Track has started, of type %d: %s \n", track.PayloadType(), track.Codec().MimeType)
+
+		localTrack, err := webrtc.NewTrackLocalStaticRTP(track.Codec().RTPCodecCapability, track.ID(), track.StreamID())
+		if err != nil {
+			return
+		}
+
+		room.mu.Lock()
+		room.localTracks[peer.id] = localTrack
+		room.mu.Unlock()
+
+		for otherID, otherPeer := range room.GetPeers() {
+			if otherID == peer.id {
+				continue
+			}
+			sender, err := otherPeer.pc.AddTrack(localTrack)
+			if err != nil {
+				continue
+			}
+			go drainRTCP(sender)
+			go renegotiate(otherPeer)
+		}
+
 		for {
-			// Read RTP packets being sent to Pion
 			rtp, _, readErr := track.ReadRTP()
 			if readErr != nil {
 				return
 			}
-
-			if writeErr := outputTrack.WriteRTP(rtp); writeErr != nil {
+			if writeErr := localTrack.WriteRTP(rtp); writeErr != nil {
 				return
 			}
 		}
@@ -125,13 +125,13 @@ func handleWebRTCOffer(offer webrtc.SessionDescription, registry *ConnectionRegi
 			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
 			fmt.Println("Peer Connection has gone to failed exiting")
 			peerConnection.Close()
-			registry.Remove(id)
+			room.RemovePeer(peer.id)
 		}
 
 		if state == webrtc.PeerConnectionStateClosed {
 			// PeerConnection was explicitly closed. This usually happens from a DTLS CloseNotify
 			fmt.Println("Peer Connection has gone to closed exiting")
-			registry.Remove(id)
+			room.RemovePeer(peer.id)
 		}
 	})
 
@@ -159,4 +159,36 @@ func handleWebRTCOffer(offer webrtc.SessionDescription, registry *ConnectionRegi
 	<-gatherComplete
 
 	return peerConnection.LocalDescription(), nil
+}
+
+func drainRTCP(sender *webrtc.RTPSender) {
+	rtcpBuf := make([]byte, 1500)
+	for {
+		if _, _, err := sender.Read(rtcpBuf); err != nil {
+			return
+		}
+	}
+}
+
+func renegotiate(peer *Peer) {
+	offer, err := peer.pc.CreateOffer(nil)
+	if err != nil {
+		return
+	}
+
+	gatherComplete := webrtc.GatheringCompletePromise(peer.pc)
+
+	if err = peer.pc.SetLocalDescription(offer); err != nil {
+		return
+	}
+
+	<-gatherComplete
+
+	if err = peer.SendSDP(*peer.pc.LocalDescription()); err != nil {
+		return
+	}
+
+	answer := <-peer.answerCh
+
+	peer.pc.SetRemoteDescription(answer) //nolint: errcheck
 }
