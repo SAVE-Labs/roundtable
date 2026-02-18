@@ -12,6 +12,8 @@ import (
 )
 
 func main() {
+	registry := NewConnectionRegistry()
+
 	e := echo.New()
 	e.Use(middleware.RequestLogger())
 
@@ -46,7 +48,7 @@ func main() {
 					continue
 				}
 
-				answer, err := handleWebRTCOffer(offer)
+				answer, err := handleWebRTCOffer(offer, registry)
 				if err != nil {
 					log.Printf("Error processing offer: %v", err)
 					websocket.JSON.Send(ws, map[string]string{"error": "Failed to process offer"})

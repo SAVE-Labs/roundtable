@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/intervalpli"
 	"github.com/pion/webrtc/v4"
 )
 
-func handleWebRTCOffer(offer webrtc.SessionDescription) (*webrtc.SessionDescription, error) {
+func handleWebRTCOffer(offer webrtc.SessionDescription, registry *ConnectionRegistry) (*webrtc.SessionDescription, error) {
 	// Create a MediaEngine object to configure the supported codec
 	mediaEngine := &webrtc.MediaEngine{}
 
@@ -62,6 +61,9 @@ func handleWebRTCOffer(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 		panic(err)
 	}
 
+	id := fmt.Sprintf("%p", peerConnection)
+	registry.Add(id, peerConnection)
+
 	// Create Track that we send audio back on
 	outputTrack, err := webrtc.NewTrackLocalStaticRTP(
 		webrtc.RTPCodecCapability{
@@ -102,11 +104,11 @@ func handleWebRTCOffer(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 			// Read RTP packets being sent to Pion
 			rtp, _, readErr := track.ReadRTP()
 			if readErr != nil {
-				panic(readErr)
+				return
 			}
 
 			if writeErr := outputTrack.WriteRTP(rtp); writeErr != nil {
-				panic(writeErr)
+				return
 			}
 		}
 	})
@@ -122,13 +124,14 @@ func handleWebRTCOffer(offer webrtc.SessionDescription) (*webrtc.SessionDescript
 			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
 			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
 			fmt.Println("Peer Connection has gone to failed exiting")
-			os.Exit(0)
+			peerConnection.Close()
+			registry.Remove(id)
 		}
 
 		if state == webrtc.PeerConnectionStateClosed {
 			// PeerConnection was explicitly closed. This usually happens from a DTLS CloseNotify
 			fmt.Println("Peer Connection has gone to closed exiting")
-			os.Exit(0)
+			registry.Remove(id)
 		}
 	})
 
