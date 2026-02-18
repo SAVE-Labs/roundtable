@@ -53,6 +53,8 @@ type Model struct {
 	AudioPlaybackCursor   int
 	AudioCaptureSelected  int
 	AudioPlaybackSelected int
+	AudioCaptureName      string
+	AudioPlaybackName     string
 	AudioErr              string
 
 	AudioEngine   *AudioEngine
@@ -94,13 +96,7 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	if m.ServerURL == nil {
-		return LoadDevicesCmd()
-	}
-	return tea.Batch(
-		LoadDevicesCmd(),
-		LoadRoomsCmd(m.ServerURL.String()),
-	)
+	return LoadConfigCmd()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

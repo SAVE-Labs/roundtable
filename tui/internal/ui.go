@@ -64,9 +64,14 @@ var (
 
 func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ConfigLoadedMsg:
+		return handleConfigLoaded(m, msg)
+
+	case ConfigSavedMsg:
+		return handleConfigSaved(m, msg), nil
 
 	case DevicesMsg:
-		return handleAudioDevices(m, msg), nil
+		return handleAudioDevices(m, msg)
 
 	case RoomsMsg:
 		return handleRooms(m, msg), nil
@@ -79,6 +84,66 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.AudioErr = msg.Err.Error()
+	}
+
+	cfg := msg.Config
+	m.MicMuted = cfg.MicMuted
+
+	m.AudioCaptureName = cfg.CaptureDeviceName
+	m.AudioPlaybackName = cfg.PlaybackDeviceName
+
+	if cfg.ServerHTTPURL != "" && cfg.ServerWSURL != "" {
+		httpURL, err := url.Parse(cfg.ServerHTTPURL)
+		if err != nil {
+			m.AudioErr = err.Error()
+		} else {
+			wsURL, wsErr := url.Parse(cfg.ServerWSURL)
+			if wsErr != nil {
+				m.AudioErr = wsErr.Error()
+			} else {
+				m.ServerURL = httpURL
+				m.WebsocketURL = wsURL
+				match := -1
+				for i, server := range m.Servers {
+					if server.HTTPURL == cfg.ServerHTTPURL && server.WSURL == cfg.ServerWSURL {
+						match = i
+						break
+					}
+				}
+				if match == -1 {
+					name := cfg.ServerName
+					if strings.TrimSpace(name) == "" {
+						name = cfg.ServerHTTPURL
+					}
+					m.Servers = append(m.Servers, ServerOption{Name: name, HTTPURL: cfg.ServerHTTPURL, WSURL: cfg.ServerWSURL})
+					match = len(m.Servers) - 1
+				}
+				m.ServerSelected = match
+				m.ServerCursor = match
+			}
+		}
+	}
+
+	if m.ServerURL == nil {
+		return m, LoadDevicesCmd()
+	}
+
+	return m, tea.Batch(
+		LoadDevicesCmd(),
+		LoadRoomsCmd(m.ServerURL.String()),
+	)
+}
+
+func handleConfigSaved(m Model, msg ConfigSavedMsg) Model {
+	if msg.Err != nil {
+		m.AudioErr = msg.Err.Error()
+	}
+	return m
 }
 
 func handleRooms(m Model, msg RoomsMsg) Model {
@@ -138,21 +203,43 @@ func handleRoomCreated(m Model, msg RoomCreatedMsg) Model {
 	return m
 }
 
-func handleAudioDevices(m Model, msg DevicesMsg) Model {
+func handleAudioDevices(m Model, msg DevicesMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
 		m.AudioErr = msg.Err.Error()
 	} else {
 		m.AudioErr = ""
 		m.AudioCaptureDevices = msg.Capture
 		m.AudioPlaybackDevices = msg.Playback
+
+		if m.AudioCaptureName != "" {
+			for i, dev := range m.AudioCaptureDevices {
+				if dev.Name() == m.AudioCaptureName {
+					m.AudioCaptureSelected = i
+					m.AudioCaptureCursor = i
+					break
+				}
+			}
+		}
+		if m.AudioPlaybackName != "" {
+			for i, dev := range m.AudioPlaybackDevices {
+				if dev.Name() == m.AudioPlaybackName {
+					m.AudioPlaybackSelected = i
+					m.AudioPlaybackCursor = i
+					break
+				}
+			}
+		}
+
 		if m.AudioCaptureCursor >= len(m.AudioCaptureDevices) {
 			m.AudioCaptureCursor = 0
 		}
 		if m.AudioPlaybackCursor >= len(m.AudioPlaybackDevices) {
 			m.AudioPlaybackCursor = 0
 		}
+		m.AudioCaptureName = ""
+		m.AudioPlaybackName = ""
 	}
-	return m
+	return m, nil
 }
 
 func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -191,6 +278,7 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.WebRTCClient != nil {
 			m.WebRTCClient.SetMuted(m.MicMuted)
 		}
+		return m, SaveConfigCmd(m.ConfigSnapshot())
 
 	default:
 		switch m.Tab {
@@ -199,7 +287,7 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case TabServers:
 			return handleServerKeys(m, msg)
 		default:
-			return handleAudioKeys(m, msg), nil
+			return handleAudioKeys(m, msg)
 		}
 	}
 
@@ -240,7 +328,10 @@ func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ServerSelected = m.ServerCursor
 		m.AudioErr = ""
 		m.SessionStatus = "Using server " + selected.Name
-		return m, LoadRoomsCmd(m.ServerURL.String())
+		return m, tea.Batch(
+			LoadRoomsCmd(m.ServerURL.String()),
+			SaveConfigCmd(m.ConfigSnapshot()),
+		)
 	}
 
 	return m, nil
@@ -349,7 +440,7 @@ func (m *Model) leaveChannel() {
 	m.SessionStatus = "Not connected"
 }
 
-func handleAudioKeys(m Model, msg tea.KeyMsg) Model {
+func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "c":
 		m.AudioFocus = AudioFocusCapture
@@ -376,14 +467,20 @@ func handleAudioKeys(m Model, msg tea.KeyMsg) Model {
 			}
 		}
 	case " ":
+		saved := false
 		if m.AudioFocus == AudioFocusCapture && len(m.AudioCaptureDevices) > 0 {
 			m.AudioCaptureSelected = m.AudioCaptureCursor
+			saved = true
 		}
 		if m.AudioFocus == AudioFocusPlayback && len(m.AudioPlaybackDevices) > 0 {
 			m.AudioPlaybackSelected = m.AudioPlaybackCursor
+			saved = true
+		}
+		if saved {
+			return m, SaveConfigCmd(m.ConfigSnapshot())
 		}
 	}
-	return m
+	return m, nil
 }
 
 func View(m Model) string {
