@@ -181,6 +181,8 @@ type WebRTCClient struct {
 	ws   *websocket.Conn
 
 	mu        sync.Mutex
+	wsMu      sync.Mutex
+	signalMu  sync.Mutex
 	track     *webrtc.TrackLocalStaticSample
 	encoder   *opus.Encoder
 	decoder   *opus.Decoder
@@ -312,7 +314,7 @@ func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient,
 		return nil, fmt.Errorf("marshal offer: %w", err)
 	}
 
-	if err := websocket.Message.Send(ws, offerBytes); err != nil {
+	if err := client.sendSignalingBytes(offerBytes); err != nil {
 		client.Close()
 		return nil, fmt.Errorf("send offer: %w", err)
 	}
@@ -334,7 +336,82 @@ func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient,
 		return nil, fmt.Errorf("set remote description: %w", err)
 	}
 
+	go client.signalingReadLoop()
+
 	return client, nil
+}
+
+func (c *WebRTCClient) signalingReadLoop() {
+	for {
+		var msgBytes []byte
+		if err := websocket.Message.Receive(c.ws, &msgBytes); err != nil {
+			return
+		}
+
+		var sdp webrtc.SessionDescription
+		if err := json.Unmarshal(msgBytes, &sdp); err != nil {
+			continue
+		}
+
+		_ = c.handleRemoteSDP(sdp)
+	}
+}
+
+func (c *WebRTCClient) handleRemoteSDP(sdp webrtc.SessionDescription) error {
+	c.signalMu.Lock()
+	defer c.signalMu.Unlock()
+
+	if c.peer == nil {
+		return fmt.Errorf("peer connection is closed")
+	}
+
+	switch sdp.Type {
+	case webrtc.SDPTypeOffer:
+		if err := c.peer.SetRemoteDescription(sdp); err != nil {
+			return fmt.Errorf("set remote offer: %w", err)
+		}
+
+		answer, err := c.peer.CreateAnswer(nil)
+		if err != nil {
+			return fmt.Errorf("create answer: %w", err)
+		}
+
+		gatherComplete := webrtc.GatheringCompletePromise(c.peer)
+		if err := c.peer.SetLocalDescription(answer); err != nil {
+			return fmt.Errorf("set local answer: %w", err)
+		}
+		<-gatherComplete
+
+		localDesc := c.peer.LocalDescription()
+		if localDesc == nil {
+			return fmt.Errorf("missing local answer")
+		}
+
+		answerBytes, err := json.Marshal(localDesc)
+		if err != nil {
+			return fmt.Errorf("marshal answer: %w", err)
+		}
+
+		if err := c.sendSignalingBytes(answerBytes); err != nil {
+			return fmt.Errorf("send answer: %w", err)
+		}
+
+	case webrtc.SDPTypeAnswer:
+		if err := c.peer.SetRemoteDescription(sdp); err != nil {
+			return fmt.Errorf("set remote answer: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *WebRTCClient) sendSignalingBytes(payload []byte) error {
+	c.wsMu.Lock()
+	defer c.wsMu.Unlock()
+	if c.ws == nil {
+		return fmt.Errorf("websocket is closed")
+	}
+	return websocket.Message.Send(c.ws, payload)
 }
 
 func (c *WebRTCClient) SendPCM16LE(pcmBytes []byte) error {

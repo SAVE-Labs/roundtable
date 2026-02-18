@@ -162,10 +162,10 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab", "right", "l":
-		m.Tab = (m.Tab + 1) % 2
+		m.Tab = (m.Tab + 1) % TabCount
 
 	case "left", "h":
-		m.Tab = (m.Tab + 1) % 2
+		m.Tab = (m.Tab - 1 + TabCount) % TabCount
 
 	case "r":
 		if m.Tab == TabAudio {
@@ -187,11 +187,54 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	default:
-		if m.Tab == TabChannels {
+		switch m.Tab {
+		case TabChannels:
 			return handleChannelsKeys(m, msg)
-		} else {
+		case TabServers:
+			return handleServerKeys(m, msg)
+		default:
 			return handleAudioKeys(m, msg), nil
 		}
+	}
+
+	return m, nil
+}
+
+func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.ServerCursor > 0 {
+			m.ServerCursor--
+		}
+	case "down", "j":
+		if m.ServerCursor < len(m.Servers)-1 {
+			m.ServerCursor++
+		}
+	case " ", "enter":
+		if len(m.Servers) == 0 {
+			return m, nil
+		}
+		selected := m.Servers[m.ServerCursor]
+		httpURL, err := url.Parse(selected.HTTPURL)
+		if err != nil {
+			m.AudioErr = err.Error()
+			m.SessionStatus = "Server selection failed"
+			return m, nil
+		}
+		wsURL, err := url.Parse(selected.WSURL)
+		if err != nil {
+			m.AudioErr = err.Error()
+			m.SessionStatus = "Server selection failed"
+			return m, nil
+		}
+
+		m.leaveChannel()
+		m.ServerURL = httpURL
+		m.WebsocketURL = wsURL
+		m.ServerSelected = m.ServerCursor
+		m.AudioErr = ""
+		m.SessionStatus = "Using server " + selected.Name
+		return m, LoadRoomsCmd(m.ServerURL.String())
 	}
 
 	return m, nil
@@ -350,6 +393,8 @@ func View(m Model) string {
 	var content string
 	if m.Tab == TabChannels {
 		content = renderChannels(m)
+	} else if m.Tab == TabServers {
+		content = renderServers(m)
 	} else {
 		content = renderAudio(m)
 	}
@@ -368,9 +413,15 @@ func renderTabs(b *strings.Builder, m Model) {
 
 	if m.Tab == TabChannels {
 		tabs = append(tabs, tabActiveStyle.Render("📢 Channels"))
+		tabs = append(tabs, tabInactiveStyle.Render("🖧 Servers"))
+		tabs = append(tabs, tabInactiveStyle.Render("🎧 Audio"))
+	} else if m.Tab == TabServers {
+		tabs = append(tabs, tabInactiveStyle.Render("📢 Channels"))
+		tabs = append(tabs, tabActiveStyle.Render("🖧 Servers"))
 		tabs = append(tabs, tabInactiveStyle.Render("🎧 Audio"))
 	} else {
 		tabs = append(tabs, tabInactiveStyle.Render("📢 Channels"))
+		tabs = append(tabs, tabInactiveStyle.Render("🖧 Servers"))
 		tabs = append(tabs, tabActiveStyle.Render("🎧 Audio"))
 	}
 
@@ -411,6 +462,50 @@ func renderChannels(m Model) string {
 		}
 
 		b.WriteString(fmt.Sprintf("%s%s%s\n", cursor, active, name))
+	}
+
+	return b.String()
+}
+
+func renderServers(m Model) string {
+	var b strings.Builder
+
+	b.WriteString(sectionTitleStyle.Render("Servers"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter to select"))
+	b.WriteString("\n\n")
+
+	if m.ServerURL != nil {
+		b.WriteString(mutedStyle.Render("Current: " + m.ServerURL.String()))
+		b.WriteString("\n\n")
+	}
+
+	if len(m.Servers) == 0 {
+		b.WriteString(helpStyle.Render("No servers configured"))
+		return b.String()
+	}
+
+	for i, server := range m.Servers {
+		cursor := "  "
+		if m.ServerCursor == i {
+			cursor = cursorStyle.Render("❯ ")
+		}
+
+		selected := " "
+		if m.ServerSelected == i {
+			selected = selectedStyle.Render("● ")
+		} else {
+			selected = mutedStyle.Render("○ ")
+		}
+
+		name := server.Name
+		if m.ServerCursor == i {
+			name = selectedStyle.Render(name)
+		}
+
+		b.WriteString(fmt.Sprintf("%s%s%s\n", cursor, selected, name))
+		b.WriteString(mutedStyle.Render("    " + server.HTTPURL))
+		b.WriteString("\n")
 	}
 
 	return b.String()
