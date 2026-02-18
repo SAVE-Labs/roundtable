@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -67,11 +68,74 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DevicesMsg:
 		return handleAudioDevices(m, msg), nil
 
+	case RoomsMsg:
+		return handleRooms(m, msg), nil
+
+	case RoomCreatedMsg:
+		return handleRoomCreated(m, msg), nil
+
 	case tea.KeyMsg:
 		return handleKeyPress(m, msg)
 	}
 
 	return m, nil
+}
+
+func handleRooms(m Model, msg RoomsMsg) Model {
+	if msg.Err != nil {
+		m.SessionStatus = "Rooms unavailable"
+		m.AudioErr = msg.Err.Error()
+		return m
+	}
+
+	m.Channels = msg.Channels
+	if len(m.Channels) == 0 {
+		m.Cursor = 0
+		m.ActiveChannel = nil
+		m.SessionStatus = "No rooms available"
+		return m
+	}
+
+	if m.Cursor >= len(m.Channels) {
+		m.Cursor = len(m.Channels) - 1
+	}
+	if m.Cursor < 0 {
+		m.Cursor = 0
+	}
+
+	if m.ActiveChannel != nil {
+		found := false
+		for i := range m.Channels {
+			if m.Channels[i].ID == m.ActiveChannel.ID {
+				m.ActiveChannel = &m.Channels[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.leaveChannel()
+		}
+	}
+
+	if m.SessionStatus == "Not connected" || m.SessionStatus == "No rooms available" {
+		m.SessionStatus = "Rooms loaded"
+	}
+
+	return m
+}
+
+func handleRoomCreated(m Model, msg RoomCreatedMsg) Model {
+	if msg.Err != nil {
+		m.AudioErr = msg.Err.Error()
+		m.SessionStatus = "Create room failed"
+		return m
+	}
+
+	m.Channels = append(m.Channels, msg.Channel)
+	m.Cursor = len(m.Channels) - 1
+	m.AudioErr = ""
+	m.SessionStatus = "Created room " + msg.Channel.Name
+	return m
 }
 
 func handleAudioDevices(m Model, msg DevicesMsg) Model {
@@ -106,6 +170,20 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		if m.Tab == TabAudio {
 			return m, LoadDevicesCmd()
+		}
+		if m.Tab == TabChannels && m.ServerURL != nil {
+			return m, LoadRoomsCmd(m.ServerURL.String())
+		}
+
+	case "n":
+		if m.Tab == TabChannels {
+			if m.ServerURL == nil {
+				m.AudioErr = "server url not configured"
+				m.SessionStatus = "Create room failed"
+				return m, nil
+			}
+			name := fmt.Sprintf("Room %d", len(m.Channels)+1)
+			return m, CreateRoomCmd(m.ServerURL.String(), name)
 		}
 
 	default:
@@ -163,8 +241,13 @@ func (m *Model) joinActiveChannel() error {
 
 	m.leaveChannel()
 
+	roomWSURL, err := websocketURLForRoom(m.WebsocketURL, selectedChannel.ID)
+	if err != nil {
+		return err
+	}
+
 	engine := NewAudioEngine()
-	client, err := NewWebRTCClient(m.WebsocketURL.String(), func(pcm []byte) {
+	client, err := NewWebRTCClient(roomWSURL, func(pcm []byte) {
 		engine.PushPCM16LE(pcm)
 	})
 	if err != nil {
@@ -186,6 +269,21 @@ func (m *Model) joinActiveChannel() error {
 	m.AudioErr = ""
 	m.SessionStatus = "Connected to " + selectedChannel.Name
 	return nil
+}
+
+func websocketURLForRoom(base *url.URL, roomID string) (string, error) {
+	if base == nil {
+		return "", fmt.Errorf("websocket url not configured")
+	}
+	if strings.TrimSpace(roomID) == "" {
+		return "", fmt.Errorf("room id is empty")
+	}
+
+	u := *base
+	q := u.Query()
+	q.Set("room", roomID)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 func (m *Model) leaveChannel() {
@@ -284,7 +382,7 @@ func renderChannels(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Channels"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter to join • press again to leave"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter join • n create room • r reload"))
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render("Status: " + m.SessionStatus))
 	b.WriteString("\n\n")

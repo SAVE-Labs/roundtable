@@ -68,7 +68,13 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return LoadDevicesCmd()
+	if m.ServerURL == nil {
+		return LoadDevicesCmd()
+	}
+	return tea.Batch(
+		LoadDevicesCmd(),
+		LoadRoomsCmd(m.ServerURL.String()),
+	)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
