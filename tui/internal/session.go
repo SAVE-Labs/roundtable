@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gen2brain/malgo"
@@ -187,6 +188,7 @@ type WebRTCClient struct {
 	encoder   *opus.Encoder
 	decoder   *opus.Decoder
 	encodeBuf []byte
+	muted     atomic.Bool
 }
 
 func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient, error) {
@@ -424,6 +426,9 @@ func (c *WebRTCClient) SendPCM16LE(pcmBytes []byte) error {
 	if c.encoder == nil {
 		return fmt.Errorf("opus encoder is not initialized")
 	}
+	if c.muted.Load() {
+		return nil
+	}
 
 	c.encodeBuf = append(c.encodeBuf, pcmBytes...)
 	for len(c.encodeBuf) >= audioFrameBytesS16LE {
@@ -447,6 +452,14 @@ func (c *WebRTCClient) SendPCM16LE(pcmBytes []byte) error {
 	}
 
 	return nil
+}
+
+func (c *WebRTCClient) SetMuted(muted bool) {
+	c.muted.Store(muted)
+}
+
+func (c *WebRTCClient) IsMuted() bool {
+	return c.muted.Load()
 }
 
 func (c *WebRTCClient) Close() {

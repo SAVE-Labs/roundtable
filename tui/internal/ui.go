@@ -186,6 +186,12 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, CreateRoomCmd(m.ServerURL.String(), name)
 		}
 
+	case "m":
+		m.MicMuted = !m.MicMuted
+		if m.WebRTCClient != nil {
+			m.WebRTCClient.SetMuted(m.MicMuted)
+		}
+
 	default:
 		switch m.Tab {
 		case TabChannels:
@@ -308,6 +314,7 @@ func (m *Model) joinActiveChannel() error {
 
 	m.WebRTCClient = client
 	m.AudioEngine = engine
+	m.WebRTCClient.SetMuted(m.MicMuted)
 	m.ActiveChannel = &selectedChannel
 	m.AudioErr = ""
 	m.SessionStatus = "Connected to " + selectedChannel.Name
@@ -433,9 +440,15 @@ func renderChannels(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Channels"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter join • n create room • r reload"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter join • n create room • r reload • m mute"))
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render("Status: " + m.SessionStatus))
+	b.WriteString("\n")
+	micStatus := "unmuted"
+	if m.MicMuted {
+		micStatus = "muted"
+	}
+	b.WriteString(mutedStyle.Render("Mic: " + micStatus + " (m)"))
 	b.WriteString("\n\n")
 
 	if len(m.Channels) == 0 {

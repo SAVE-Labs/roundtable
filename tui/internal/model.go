@@ -58,6 +58,7 @@ type Model struct {
 	AudioEngine   *AudioEngine
 	WebRTCClient  *WebRTCClient
 	SessionStatus string
+	MicMuted      bool
 }
 
 func New() Model {
