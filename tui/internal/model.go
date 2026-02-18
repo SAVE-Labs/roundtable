@@ -42,10 +42,19 @@ type Model struct {
 	AudioCaptureSelected  int
 	AudioPlaybackSelected int
 	AudioErr              string
+
+	AudioEngine   *AudioEngine
+	WebRTCClient  *WebRTCClient
+	SessionStatus string
 }
 
 func New() Model {
+	serverURL, _ := url.Parse(defaultBackendBaseURL)
+	wsURL, _ := url.Parse(defaultBackendWS)
+
 	return Model{
+		ServerURL:    serverURL,
+		WebsocketURL: wsURL,
 		Channels: []Channel{
 			{ID: "general", Name: "General"},
 			{ID: "offtopic", Name: "Off Topic"},
@@ -54,6 +63,7 @@ func New() Model {
 		AudioFocus:            AudioFocusCapture,
 		AudioCaptureSelected:  -1,
 		AudioPlaybackSelected: -1,
+		SessionStatus:         "Not connected",
 	}
 }
 

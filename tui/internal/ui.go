@@ -94,6 +94,7 @@ func handleAudioDevices(m Model, msg DevicesMsg) Model {
 func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
+		m.leaveChannel()
 		return m, tea.Quit
 
 	case "tab", "right", "l":
@@ -109,7 +110,7 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default:
 		if m.Tab == TabChannels {
-			return handleChannelsKeys(m, msg), nil
+			return handleChannelsKeys(m, msg)
 		} else {
 			return handleAudioKeys(m, msg), nil
 		}
@@ -118,7 +119,7 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func handleChannelsKeys(m Model, msg tea.KeyMsg) Model {
+func handleChannelsKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.Cursor > 0 {
@@ -128,12 +129,76 @@ func handleChannelsKeys(m Model, msg tea.KeyMsg) Model {
 		if m.Cursor < len(m.Channels)-1 {
 			m.Cursor++
 		}
-	case " ":
+	case " ", "enter":
 		if len(m.Channels) > 0 {
-			m.ActiveChannel = &m.Channels[m.Cursor]
+			if m.ActiveChannel != nil && m.ActiveChannel.ID == m.Channels[m.Cursor].ID {
+				m.leaveChannel()
+			} else {
+				m.ActiveChannel = &m.Channels[m.Cursor]
+				if err := m.joinActiveChannel(); err != nil {
+					m.SessionStatus = "Join failed"
+					m.AudioErr = err.Error()
+					m.ActiveChannel = nil
+				}
+			}
 		}
 	}
-	return m
+	return m, nil
+}
+
+func (m *Model) joinActiveChannel() error {
+	if m.ActiveChannel == nil {
+		return fmt.Errorf("no channel selected")
+	}
+	selectedChannel := *m.ActiveChannel
+	if m.AudioCaptureSelected < 0 || m.AudioCaptureSelected >= len(m.AudioCaptureDevices) {
+		return fmt.Errorf("select a capture device first")
+	}
+	if m.AudioPlaybackSelected < 0 || m.AudioPlaybackSelected >= len(m.AudioPlaybackDevices) {
+		return fmt.Errorf("select a playback device first")
+	}
+	if m.WebsocketURL == nil {
+		return fmt.Errorf("websocket url not configured")
+	}
+
+	m.leaveChannel()
+
+	engine := NewAudioEngine()
+	client, err := NewWebRTCClient(m.WebsocketURL.String(), func(pcm []byte) {
+		engine.PushPCM16LE(pcm)
+	})
+	if err != nil {
+		return err
+	}
+
+	capture := m.AudioCaptureDevices[m.AudioCaptureSelected]
+	playback := m.AudioPlaybackDevices[m.AudioPlaybackSelected]
+	if err := engine.Start(capture, playback, func(pcm []byte) {
+		_ = client.SendPCM16LE(pcm)
+	}); err != nil {
+		client.Close()
+		return err
+	}
+
+	m.WebRTCClient = client
+	m.AudioEngine = engine
+	m.ActiveChannel = &selectedChannel
+	m.AudioErr = ""
+	m.SessionStatus = "Connected to " + selectedChannel.Name
+	return nil
+}
+
+func (m *Model) leaveChannel() {
+	if m.WebRTCClient != nil {
+		m.WebRTCClient.Close()
+		m.WebRTCClient = nil
+	}
+	if m.AudioEngine != nil {
+		m.AudioEngine.Close()
+		m.AudioEngine = nil
+	}
+	m.ActiveChannel = nil
+	m.SessionStatus = "Not connected"
 }
 
 func handleAudioKeys(m Model, msg tea.KeyMsg) Model {
@@ -219,7 +284,9 @@ func renderChannels(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Channels"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space to select"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter to join • press again to leave"))
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render("Status: " + m.SessionStatus))
 	b.WriteString("\n\n")
 
 	if len(m.Channels) == 0 {
