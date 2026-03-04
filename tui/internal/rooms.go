@@ -20,6 +20,59 @@ type RoomCreatedMsg struct {
 	Err     error
 }
 
+type RoomDeletedMsg struct {
+	RoomID string
+	Err    error
+}
+
+type ServerProbeMode int
+
+const (
+	ServerProbeSelect ServerProbeMode = iota
+	ServerProbeAdd
+)
+
+type ServerInfoMsg struct {
+	Mode    ServerProbeMode
+	Index   int
+	Server  ServerOption
+	Version string
+	Err     error
+}
+
+func ProbeServerInfoCmd(mode ServerProbeMode, index int, server ServerOption) tea.Cmd {
+	return func() tea.Msg {
+		trimmedServer := strings.TrimSpace(server.HTTPURL)
+		if trimmedServer == "" {
+			return ServerInfoMsg{Mode: mode, Index: index, Server: server, Err: fmt.Errorf("server url is empty")}
+		}
+
+		resp, err := http.Get(strings.TrimRight(trimmedServer, "/") + "/info")
+		if err != nil {
+			return ServerInfoMsg{Mode: mode, Index: index, Server: server, Err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return ServerInfoMsg{Mode: mode, Index: index, Server: server, Err: fmt.Errorf("info failed: %s", resp.Status)}
+		}
+
+		var payload struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return ServerInfoMsg{Mode: mode, Index: index, Server: server, Err: err}
+		}
+
+		if strings.TrimSpace(payload.Name) != "" {
+			server.Name = strings.TrimSpace(payload.Name)
+		}
+
+		return ServerInfoMsg{Mode: mode, Index: index, Server: server, Version: payload.Version}
+	}
+}
+
 func LoadRoomsCmd(serverURL string) tea.Cmd {
 	return func() tea.Msg {
 		if strings.TrimSpace(serverURL) == "" {
@@ -94,5 +147,35 @@ func CreateRoomCmd(serverURL, name string) tea.Cmd {
 		}
 
 		return RoomCreatedMsg{Channel: Channel{ID: room.ID, Name: room.Name}}
+	}
+}
+
+func DeleteRoomCmd(serverURL, roomID string) tea.Cmd {
+	return func() tea.Msg {
+		trimmedServer := strings.TrimSpace(serverURL)
+		trimmedRoomID := strings.TrimSpace(roomID)
+		if trimmedServer == "" {
+			return RoomDeletedMsg{Err: fmt.Errorf("server url is empty")}
+		}
+		if trimmedRoomID == "" {
+			return RoomDeletedMsg{Err: fmt.Errorf("room id is required")}
+		}
+
+		req, err := http.NewRequest(http.MethodDelete, strings.TrimRight(trimmedServer, "/")+"/rooms/"+trimmedRoomID, nil)
+		if err != nil {
+			return RoomDeletedMsg{RoomID: trimmedRoomID, Err: err}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return RoomDeletedMsg{RoomID: trimmedRoomID, Err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent {
+			return RoomDeletedMsg{RoomID: trimmedRoomID, Err: fmt.Errorf("delete room failed: %s", resp.Status)}
+		}
+
+		return RoomDeletedMsg{RoomID: trimmedRoomID}
 	}
 }

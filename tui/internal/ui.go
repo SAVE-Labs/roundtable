@@ -11,11 +11,11 @@ import (
 
 var (
 	// Color scheme
-	primaryColor   = lipgloss.Color("205") // Pink
-	secondaryColor = lipgloss.Color("86")  // Cyan
-	accentColor    = lipgloss.Color("220") // Yellow/Gold
-	mutedColor     = lipgloss.Color("241") // Gray
-	errorColor     = lipgloss.Color("196") // Red
+	primaryColor   = lipgloss.Color("#BD93F9") // Dracula Purple
+	secondaryColor = lipgloss.Color("#8BE9FD") // Dracula Cyan
+	accentColor    = lipgloss.Color("#50FA7B") // Dracula Green
+	mutedColor     = lipgloss.Color("#6272A4") // Dracula Comment
+	errorColor     = lipgloss.Color("#FF5555") // Dracula Red
 
 	// Styles
 	titleStyle = lipgloss.NewStyle().
@@ -25,7 +25,7 @@ var (
 
 	tabActiveStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("15")).
+			Foreground(lipgloss.Color("#F8F8F2")).
 			Background(primaryColor).
 			Padding(0, 2)
 
@@ -79,6 +79,12 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RoomCreatedMsg:
 		return handleRoomCreated(m, msg), nil
 
+	case RoomDeletedMsg:
+		return handleRoomDeleted(m, msg), nil
+
+	case ServerInfoMsg:
+		return handleServerInfo(m, msg)
+
 	case tea.KeyMsg:
 		return handleKeyPress(m, msg)
 	}
@@ -93,16 +99,38 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 
 	cfg := msg.Config
 	m.MicMuted = cfg.MicMuted
+	m.ServerSelected = -1
+	m.ServerCursor = 0
+	m.ServerURL = nil
+	m.WebsocketURL = nil
 
 	m.AudioCaptureName = cfg.CaptureDeviceName
 	m.AudioPlaybackName = cfg.PlaybackDeviceName
 
-	if cfg.ServerHTTPURL != "" && cfg.ServerWSURL != "" {
-		httpURL, err := url.Parse(cfg.ServerHTTPURL)
+	if len(cfg.Servers) > 0 {
+		m.Servers = m.Servers[:0]
+		for _, server := range cfg.Servers {
+			if strings.TrimSpace(server.HTTPURL) == "" || strings.TrimSpace(server.WSURL) == "" {
+				continue
+			}
+			name := strings.TrimSpace(server.Name)
+			if name == "" {
+				name = server.HTTPURL
+			}
+			m.Servers = append(m.Servers, ServerOption{Name: name, HTTPURL: server.HTTPURL, WSURL: server.WSURL})
+		}
+		if len(m.Servers) == 0 {
+			m.ServerSelected = -1
+			m.ServerCursor = 0
+		}
+	}
+
+	if cfg.LastUsedServer.HTTPURL != "" && cfg.LastUsedServer.WSURL != "" {
+		httpURL, err := url.Parse(cfg.LastUsedServer.HTTPURL)
 		if err != nil {
 			m.AudioErr = err.Error()
 		} else {
-			wsURL, wsErr := url.Parse(cfg.ServerWSURL)
+			wsURL, wsErr := url.Parse(cfg.LastUsedServer.WSURL)
 			if wsErr != nil {
 				m.AudioErr = wsErr.Error()
 			} else {
@@ -110,23 +138,29 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 				m.WebsocketURL = wsURL
 				match := -1
 				for i, server := range m.Servers {
-					if server.HTTPURL == cfg.ServerHTTPURL && server.WSURL == cfg.ServerWSURL {
+					if server.HTTPURL == cfg.LastUsedServer.HTTPURL && server.WSURL == cfg.LastUsedServer.WSURL {
 						match = i
 						break
 					}
 				}
 				if match == -1 {
-					name := cfg.ServerName
+					name := cfg.LastUsedServer.Name
 					if strings.TrimSpace(name) == "" {
-						name = cfg.ServerHTTPURL
+						name = cfg.LastUsedServer.HTTPURL
 					}
-					m.Servers = append(m.Servers, ServerOption{Name: name, HTTPURL: cfg.ServerHTTPURL, WSURL: cfg.ServerWSURL})
+					m.Servers = append(m.Servers, ServerOption{Name: name, HTTPURL: cfg.LastUsedServer.HTTPURL, WSURL: cfg.LastUsedServer.WSURL})
 					match = len(m.Servers) - 1
 				}
 				m.ServerSelected = match
 				m.ServerCursor = match
 			}
 		}
+	}
+
+	if m.ServerSelected < 0 || m.ServerSelected >= len(m.Servers) {
+		m.Tab = TabServers
+	} else {
+		m.Tab = TabChannels
 	}
 
 	if m.ServerURL == nil {
@@ -191,16 +225,134 @@ func handleRooms(m Model, msg RoomsMsg) Model {
 
 func handleRoomCreated(m Model, msg RoomCreatedMsg) Model {
 	if msg.Err != nil {
-		m.AudioErr = msg.Err.Error()
+		if m.RoomFormOpen {
+			m.RoomFormErr = msg.Err.Error()
+		} else {
+			m.AudioErr = msg.Err.Error()
+		}
 		m.SessionStatus = "Create room failed"
 		return m
 	}
 
 	m.Channels = append(m.Channels, msg.Channel)
 	m.Cursor = len(m.Channels) - 1
+	m.RoomFormOpen = false
+	m.RoomFormName = ""
+	m.RoomFormErr = ""
 	m.AudioErr = ""
 	m.SessionStatus = "Created room " + msg.Channel.Name
 	return m
+}
+
+func handleRoomDeleted(m Model, msg RoomDeletedMsg) Model {
+	if msg.Err != nil {
+		m.AudioErr = msg.Err.Error()
+		m.SessionStatus = "Delete room failed"
+		return m
+	}
+
+	removedIndex := -1
+	for i, ch := range m.Channels {
+		if ch.ID == msg.RoomID {
+			removedIndex = i
+			break
+		}
+	}
+
+	if removedIndex == -1 {
+		m.SessionStatus = "Room deleted"
+		return m
+	}
+
+	if m.ActiveChannel != nil && m.ActiveChannel.ID == msg.RoomID {
+		m.leaveChannel()
+	}
+
+	m.Channels = append(m.Channels[:removedIndex], m.Channels[removedIndex+1:]...)
+	if len(m.Channels) == 0 {
+		m.Cursor = 0
+		m.ActiveChannel = nil
+		m.SessionStatus = "No rooms available"
+		return m
+	}
+
+	if m.Cursor >= len(m.Channels) {
+		m.Cursor = len(m.Channels) - 1
+	}
+	if m.Cursor < 0 {
+		m.Cursor = 0
+	}
+
+	m.SessionStatus = "Room deleted"
+	return m
+}
+
+func handleServerInfo(m Model, msg ServerInfoMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		friendlyErr := "Error connecting to server, are you sure the URL is correct?"
+		if msg.Mode == ServerProbeAdd {
+			m.ServerFormErr = friendlyErr
+			m.ServerErr = ""
+			m.SessionStatus = "Server add failed"
+		} else {
+			m.ServerErr = friendlyErr
+			m.ServerFormErr = ""
+			m.SessionStatus = "Server selection failed"
+		}
+		return m, nil
+	}
+
+	selected := msg.Server
+
+	if msg.Mode == ServerProbeAdd {
+		m.Servers = append(m.Servers, selected)
+		m.ServerCursor = len(m.Servers) - 1
+		m.ServerSelected = m.ServerCursor
+		m.ServerFormErr = ""
+		m.ServerFormOpen = false
+		m.ServerFormName = ""
+		m.ServerFormURL = ""
+	} else {
+		if msg.Index < 0 || msg.Index >= len(m.Servers) {
+			return m, nil
+		}
+		m.ServerCursor = msg.Index
+		m.ServerSelected = msg.Index
+		m.Servers[msg.Index] = selected
+	}
+
+	httpURL, err := url.Parse(selected.HTTPURL)
+	if err != nil {
+		if msg.Mode == ServerProbeAdd {
+			m.ServerFormErr = err.Error()
+		} else {
+			m.ServerErr = err.Error()
+		}
+		m.SessionStatus = "Server selection failed"
+		return m, nil
+	}
+	wsURL, err := url.Parse(selected.WSURL)
+	if err != nil {
+		if msg.Mode == ServerProbeAdd {
+			m.ServerFormErr = err.Error()
+		} else {
+			m.ServerErr = err.Error()
+		}
+		m.SessionStatus = "Server selection failed"
+		return m, nil
+	}
+
+	m.leaveChannel()
+	m.ServerURL = httpURL
+	m.WebsocketURL = wsURL
+	m.ServerErr = ""
+	m.ServerFormErr = ""
+	m.SessionStatus = "Using server " + selected.Name
+
+	return m, tea.Batch(
+		LoadRoomsCmd(m.ServerURL.String()),
+		SaveConfigCmd(m.ConfigSnapshot()),
+	)
 }
 
 func handleAudioDevices(m Model, msg DevicesMsg) (tea.Model, tea.Cmd) {
@@ -243,6 +395,26 @@ func handleAudioDevices(m Model, msg DevicesMsg) (tea.Model, tea.Cmd) {
 }
 
 func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.Tab == TabChannels && m.RoomFormOpen {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.leaveChannel()
+			return m, tea.Quit
+		default:
+			return handleRoomFormKeys(m, msg)
+		}
+	}
+
+	if m.Tab == TabServers && m.ServerFormOpen {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.leaveChannel()
+			return m, tea.Quit
+		default:
+			return handleServerKeys(m, msg)
+		}
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		m.leaveChannel()
@@ -264,13 +436,10 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "n":
 		if m.Tab == TabChannels {
-			if m.ServerURL == nil {
-				m.AudioErr = "server url not configured"
-				m.SessionStatus = "Create room failed"
-				return m, nil
-			}
-			name := fmt.Sprintf("Room %d", len(m.Channels)+1)
-			return m, CreateRoomCmd(m.ServerURL.String(), name)
+			m.RoomFormOpen = true
+			m.RoomFormName = ""
+			m.RoomFormErr = ""
+			return m, nil
 		}
 
 	case "m":
@@ -294,8 +463,120 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func handleRoomFormKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.RoomFormOpen = false
+		m.RoomFormName = ""
+		m.RoomFormErr = ""
+		return m, nil
+	case tea.KeyEnter:
+		if m.ServerURL == nil {
+			m.RoomFormErr = "server url not configured"
+			m.SessionStatus = "Create room failed"
+			return m, nil
+		}
+
+		name := strings.TrimSpace(m.RoomFormName)
+		if name == "" {
+			m.RoomFormErr = "room name is required"
+			m.SessionStatus = "Create room failed"
+			return m, nil
+		}
+
+		m.RoomFormErr = ""
+		m.SessionStatus = "Creating room " + name
+		return m, CreateRoomCmd(m.ServerURL.String(), name)
+	case tea.KeyBackspace, tea.KeyDelete:
+		if len(m.RoomFormName) > 0 {
+			m.RoomFormName = m.RoomFormName[:len(m.RoomFormName)-1]
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m.RoomFormName += string(msg.Runes)
+		return m, nil
+	}
+
+	return m, nil
+}
+
 func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.ServerFormOpen {
+		return handleServerFormKeys(m, msg)
+	}
+
 	switch msg.String() {
+	case "a":
+		m.ServerFormOpen = true
+		m.ServerFormField = ServerFormFieldName
+		m.ServerFormName = ""
+		m.ServerFormURL = ""
+		m.ServerFormErr = ""
+		return m, nil
+	case "d":
+		if len(m.Servers) == 0 {
+			return m, nil
+		}
+
+		deleteIndex := m.ServerCursor
+		if deleteIndex < 0 || deleteIndex >= len(m.Servers) {
+			return m, nil
+		}
+
+		deletedSelected := m.ServerSelected == deleteIndex
+		m.Servers = append(m.Servers[:deleteIndex], m.Servers[deleteIndex+1:]...)
+
+		if len(m.Servers) == 0 {
+			m.leaveChannel()
+			m.ServerSelected = -1
+			m.ServerCursor = 0
+			m.ServerURL = nil
+			m.WebsocketURL = nil
+			m.SessionStatus = "No server selected"
+			m.ServerErr = ""
+			return m, SaveConfigCmd(m.ConfigSnapshot())
+		}
+
+		if m.ServerCursor >= len(m.Servers) {
+			m.ServerCursor = len(m.Servers) - 1
+		}
+		if m.ServerCursor < 0 {
+			m.ServerCursor = 0
+		}
+
+		if m.ServerSelected > deleteIndex {
+			m.ServerSelected--
+		}
+
+		if deletedSelected {
+			m.leaveChannel()
+			m.ServerSelected = m.ServerCursor
+			selected := m.Servers[m.ServerSelected]
+
+			httpURL, err := url.Parse(selected.HTTPURL)
+			if err != nil {
+				m.ServerErr = err.Error()
+				m.SessionStatus = "Server selection failed"
+				return m, SaveConfigCmd(m.ConfigSnapshot())
+			}
+			wsURL, err := url.Parse(selected.WSURL)
+			if err != nil {
+				m.ServerErr = err.Error()
+				m.SessionStatus = "Server selection failed"
+				return m, SaveConfigCmd(m.ConfigSnapshot())
+			}
+
+			m.ServerURL = httpURL
+			m.WebsocketURL = wsURL
+			m.ServerErr = ""
+			m.SessionStatus = "Using server " + selected.Name
+			return m, tea.Batch(
+				LoadRoomsCmd(m.ServerURL.String()),
+				SaveConfigCmd(m.ConfigSnapshot()),
+			)
+		}
+
+		return m, SaveConfigCmd(m.ConfigSnapshot())
 	case "up", "k":
 		if m.ServerCursor > 0 {
 			m.ServerCursor--
@@ -309,32 +590,124 @@ func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		selected := m.Servers[m.ServerCursor]
-		httpURL, err := url.Parse(selected.HTTPURL)
-		if err != nil {
-			m.AudioErr = err.Error()
-			m.SessionStatus = "Server selection failed"
-			return m, nil
-		}
-		wsURL, err := url.Parse(selected.WSURL)
-		if err != nil {
-			m.AudioErr = err.Error()
-			m.SessionStatus = "Server selection failed"
-			return m, nil
-		}
-
-		m.leaveChannel()
-		m.ServerURL = httpURL
-		m.WebsocketURL = wsURL
-		m.ServerSelected = m.ServerCursor
-		m.AudioErr = ""
-		m.SessionStatus = "Using server " + selected.Name
-		return m, tea.Batch(
-			LoadRoomsCmd(m.ServerURL.String()),
-			SaveConfigCmd(m.ConfigSnapshot()),
-		)
+		m.ServerErr = ""
+		m.ServerFormErr = ""
+		m.SessionStatus = "Checking server " + selected.Name
+		return m, ProbeServerInfoCmd(ServerProbeSelect, m.ServerCursor, selected)
 	}
 
 	return m, nil
+}
+
+func handleServerFormKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.ServerFormOpen = false
+		m.ServerFormName = ""
+		m.ServerFormURL = ""
+		m.ServerFormErr = ""
+		return m, nil
+	case tea.KeyTab:
+		if m.ServerFormField == ServerFormFieldName {
+			m.ServerFormField = ServerFormFieldURL
+		} else {
+			m.ServerFormField = ServerFormFieldName
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if m.ServerFormField == ServerFormFieldName {
+			m.ServerFormField = ServerFormFieldURL
+			return m, nil
+		}
+
+		httpURL, wsURL, err := normalizeServerURLs(m.ServerFormURL)
+		if err != nil {
+			m.ServerFormErr = err.Error()
+			m.SessionStatus = "Server add failed"
+			return m, nil
+		}
+
+		name := strings.TrimSpace(m.ServerFormName)
+		if name == "" {
+			name = httpURL
+		}
+
+		m.ServerFormErr = ""
+		m.SessionStatus = "Checking server " + name
+		candidate := ServerOption{Name: name, HTTPURL: httpURL, WSURL: wsURL}
+		return m, ProbeServerInfoCmd(ServerProbeAdd, -1, candidate)
+	case tea.KeyBackspace, tea.KeyDelete:
+		if m.ServerFormField == ServerFormFieldName {
+			if len(m.ServerFormName) > 0 {
+				m.ServerFormName = m.ServerFormName[:len(m.ServerFormName)-1]
+			}
+		} else {
+			if len(m.ServerFormURL) > 0 {
+				m.ServerFormURL = m.ServerFormURL[:len(m.ServerFormURL)-1]
+			}
+		}
+		return m, nil
+	case tea.KeyRunes:
+		text := string(msg.Runes)
+		if m.ServerFormField == ServerFormFieldName {
+			m.ServerFormName += text
+		} else {
+			m.ServerFormURL += text
+		}
+		return m, nil
+	}
+
+	if msg.String() == "left" || msg.String() == "h" {
+		m.ServerFormField = ServerFormFieldName
+		return m, nil
+	}
+	if msg.String() == "right" || msg.String() == "l" {
+		m.ServerFormField = ServerFormFieldURL
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func normalizeServerURLs(raw string) (string, string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("server url is required")
+	}
+
+	if !strings.Contains(trimmed, "://") {
+		trimmed = "http://" + trimmed
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", "", err
+	}
+	if parsed.Host == "" {
+		return "", "", fmt.Errorf("invalid server url")
+	}
+
+	httpURL := *parsed
+	wsURL := *parsed
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "http":
+		httpURL.Scheme = "http"
+		wsURL.Scheme = "ws"
+	case "https":
+		httpURL.Scheme = "https"
+		wsURL.Scheme = "wss"
+	case "ws":
+		httpURL.Scheme = "http"
+		wsURL.Scheme = "ws"
+	case "wss":
+		httpURL.Scheme = "https"
+		wsURL.Scheme = "wss"
+	default:
+		return "", "", fmt.Errorf("unsupported url scheme: %s", parsed.Scheme)
+	}
+
+	return httpURL.String(), wsURL.String(), nil
 }
 
 func handleChannelsKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -347,6 +720,19 @@ func handleChannelsKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.Cursor < len(m.Channels)-1 {
 			m.Cursor++
 		}
+	case "d":
+		if m.ServerURL == nil {
+			m.AudioErr = "server url not configured"
+			m.SessionStatus = "Delete room failed"
+			return m, nil
+		}
+		if len(m.Channels) == 0 || m.Cursor < 0 || m.Cursor >= len(m.Channels) {
+			return m, nil
+		}
+		room := m.Channels[m.Cursor]
+		m.AudioErr = ""
+		m.SessionStatus = "Deleting room " + room.Name
+		return m, DeleteRoomCmd(m.ServerURL.String(), room.ID)
 	case " ", "enter":
 		if len(m.Channels) > 0 {
 			if m.ActiveChannel != nil && m.ActiveChannel.ID == m.Channels[m.Cursor].ID {
@@ -497,8 +883,36 @@ func View(m Model) string {
 	var content string
 	if m.Tab == TabChannels {
 		content = renderChannels(m)
+		if m.RoomFormOpen {
+			modal := renderRoomFormModal(m, lipgloss.Width(content))
+			contentWidth := lipgloss.Width(content)
+			modalWidth := lipgloss.Width(modal)
+			if modalWidth > contentWidth {
+				contentWidth = modalWidth
+			}
+			content = lipgloss.JoinVertical(
+				lipgloss.Left,
+				content,
+				"",
+				lipgloss.Place(contentWidth, lipgloss.Height(modal), lipgloss.Center, lipgloss.Top, modal),
+			)
+		}
 	} else if m.Tab == TabServers {
 		content = renderServers(m)
+		if m.ServerFormOpen {
+			modal := renderServerFormModal(m, lipgloss.Width(content))
+			contentWidth := lipgloss.Width(content)
+			modalWidth := lipgloss.Width(modal)
+			if modalWidth > contentWidth {
+				contentWidth = modalWidth
+			}
+			content = lipgloss.JoinVertical(
+				lipgloss.Left,
+				content,
+				"",
+				lipgloss.Place(contentWidth, lipgloss.Height(modal), lipgloss.Center, lipgloss.Top, modal),
+			)
+		}
 	} else {
 		content = renderAudio(m)
 	}
@@ -537,7 +951,7 @@ func renderChannels(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Channels"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter join • n create room • r reload • m mute"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter join • n create room • d delete room • r reload • m mute"))
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render("Status: " + m.SessionStatus))
 	b.WriteString("\n")
@@ -577,13 +991,53 @@ func renderChannels(m Model) string {
 	return b.String()
 }
 
+func renderRoomFormModal(m Model, totalWidth int) string {
+	var b strings.Builder
+
+	b.WriteString(sectionTitleStyle.Render("Create Room"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Type name • enter create • esc cancel"))
+	b.WriteString("\n\n")
+
+	if m.RoomFormErr != "" {
+		b.WriteString(errorStyle.Render("⚠ Error: " + m.RoomFormErr))
+		b.WriteString("\n\n")
+	}
+
+	name := m.RoomFormName
+	if name == "" {
+		name = mutedStyle.Render("(required)")
+	}
+
+	b.WriteString(cursorStyle.Render("❯ Name: ") + name)
+
+	modalStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(secondaryColor).
+		Padding(1, 2)
+
+	if totalWidth > 6 {
+		contentWidth := totalWidth - 6
+		if contentWidth > lipgloss.Width(b.String()) {
+			modalStyle = modalStyle.Width(contentWidth)
+		}
+	}
+
+	return modalStyle.Render(b.String())
+}
+
 func renderServers(m Model) string {
 	var b strings.Builder
 
 	b.WriteString(sectionTitleStyle.Render("Servers"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k to move • space/enter to select"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k move • space/enter select • a add • d delete"))
 	b.WriteString("\n\n")
+
+	if m.ServerErr != "" {
+		b.WriteString(errorStyle.Render("⚠ Error: " + m.ServerErr))
+		b.WriteString("\n\n")
+	}
 
 	if m.ServerURL != nil {
 		b.WriteString(mutedStyle.Render("Current: " + m.ServerURL.String()))
@@ -621,6 +1075,55 @@ func renderServers(m Model) string {
 	return b.String()
 }
 
+func renderServerFormModal(m Model, totalWidth int) string {
+	var b strings.Builder
+
+	b.WriteString(sectionTitleStyle.Render("Add Server"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Type values • tab switch field • enter save • esc cancel"))
+	b.WriteString("\n\n")
+
+	if m.ServerFormErr != "" {
+		b.WriteString(errorStyle.Render("⚠ Error: " + m.ServerFormErr))
+		b.WriteString("\n\n")
+	}
+
+	nameLabel := "  Name: "
+	urlLabel := "  URL:  "
+	if m.ServerFormField == ServerFormFieldName {
+		nameLabel = cursorStyle.Render("❯ Name: ")
+	}
+	if m.ServerFormField == ServerFormFieldURL {
+		urlLabel = cursorStyle.Render("❯ URL:  ")
+	}
+
+	name := m.ServerFormName
+	if name == "" {
+		name = mutedStyle.Render("(optional)")
+	}
+	serverURL := m.ServerFormURL
+	if serverURL == "" {
+		serverURL = mutedStyle.Render("(required, e.g. localhost:8080)")
+	}
+
+	b.WriteString(nameLabel + name + "\n")
+	b.WriteString(urlLabel + serverURL)
+
+	modalStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(secondaryColor).
+		Padding(1, 2)
+
+	if totalWidth > 6 {
+		contentWidth := totalWidth - 6
+		if contentWidth > lipgloss.Width(b.String()) {
+			modalStyle = modalStyle.Width(contentWidth)
+		}
+	}
+
+	return modalStyle.Render(b.String())
+}
+
 func renderAudio(m Model) string {
 	var b strings.Builder
 
@@ -628,11 +1131,6 @@ func renderAudio(m Model) string {
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("c=capture • p=playback • ↑/↓ to move • space to select • r to reload"))
 	b.WriteString("\n\n")
-
-	if m.AudioErr != "" {
-		b.WriteString(errorStyle.Render("⚠ Error: " + m.AudioErr))
-		b.WriteString("\n\n")
-	}
 
 	// Capture devices
 	captureTitle := "🎤 Capture Devices"

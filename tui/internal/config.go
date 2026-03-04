@@ -2,20 +2,25 @@ package internal
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type ServerConfig struct {
+	Name    string `json:"name,omitempty"`
+	HTTPURL string `json:"http_url,omitempty"`
+	WSURL   string `json:"ws_url,omitempty"`
+}
+
 type AppConfig struct {
-	ServerName         string `json:"server_name,omitempty"`
-	ServerHTTPURL      string `json:"server_http_url,omitempty"`
-	ServerWSURL        string `json:"server_ws_url,omitempty"`
-	CaptureDeviceName  string `json:"capture_device_name,omitempty"`
-	PlaybackDeviceName string `json:"playback_device_name,omitempty"`
-	MicMuted           bool   `json:"mic_muted,omitempty"`
+	Version            int            `json:"version,omitempty"`
+	CaptureDeviceName  string         `json:"capture_device_name,omitempty"`
+	PlaybackDeviceName string         `json:"playback_device_name,omitempty"`
+	MicMuted           bool           `json:"mic_muted,omitempty"`
+	LastUsedServer     ServerConfig   `json:"last_used_server,omitempty"`
+	Servers            []ServerConfig `json:"servers,omitempty"`
 }
 
 type ConfigLoadedMsg struct {
@@ -51,6 +56,7 @@ func LoadConfigCmd() tea.Cmd {
 		}
 		defer file.Close()
 
+		// TODO: handle config versioning and migration. For now, we just ignore the version field.
 		var cfg AppConfig
 		if err := json.NewDecoder(file).Decode(&cfg); err != nil {
 			return ConfigLoadedMsg{Err: err}
@@ -86,20 +92,27 @@ func SaveConfigCmd(cfg AppConfig) tea.Cmd {
 
 func (m Model) ConfigSnapshot() AppConfig {
 	cfg := AppConfig{
+		Version:  1,
 		MicMuted: m.MicMuted,
 	}
 
 	if m.ServerSelected >= 0 && m.ServerSelected < len(m.Servers) {
 		s := m.Servers[m.ServerSelected]
-		cfg.ServerName = s.Name
-		cfg.ServerHTTPURL = s.HTTPURL
-		cfg.ServerWSURL = s.WSURL
-	} else {
-		if m.ServerURL != nil {
-			cfg.ServerHTTPURL = m.ServerURL.String()
+		cfg.LastUsedServer = ServerConfig{
+			Name:    s.Name,
+			HTTPURL: s.HTTPURL,
+			WSURL:   s.WSURL,
 		}
-		if m.WebsocketURL != nil {
-			cfg.ServerWSURL = m.WebsocketURL.String()
+	} else {
+		cfg.LastUsedServer = ServerConfig{}
+	}
+
+	cfg.Servers = make([]ServerConfig, len(m.Servers))
+	for i, s := range m.Servers {
+		cfg.Servers[i] = ServerConfig{
+			Name:    s.Name,
+			HTTPURL: s.HTTPURL,
+			WSURL:   s.WSURL,
 		}
 	}
 
@@ -111,19 +124,4 @@ func (m Model) ConfigSnapshot() AppConfig {
 	}
 
 	return cfg
-}
-
-func configFromSelectedServer(server ServerOption) AppConfig {
-	return AppConfig{
-		ServerName:    server.Name,
-		ServerHTTPURL: server.HTTPURL,
-		ServerWSURL:   server.WSURL,
-	}
-}
-
-func validateConfigServer(cfg AppConfig) error {
-	if cfg.ServerHTTPURL == "" || cfg.ServerWSURL == "" {
-		return fmt.Errorf("server urls are incomplete")
-	}
-	return nil
 }
