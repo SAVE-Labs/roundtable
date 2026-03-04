@@ -9,12 +9,12 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver for database/sql
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/pion/webrtc/v4"
 	"github.com/pressly/goose/v3"
-	"golang.org/x/net/websocket"
 	_ "modernc.org/sqlite" // sqlite driver for database/sql
 
 	"roundtable/backend/db"
@@ -117,6 +117,10 @@ func main() {
 		return c.NoContent(http.StatusNoContent)
 	})
 
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
 	e.GET("/ws", func(c *echo.Context) error {
 		roomID := c.QueryParam("room")
 		room, ok := rooms.Get(c.Request().Context(), roomID)
@@ -124,39 +128,40 @@ func main() {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "room not found"})
 		}
 
-		websocket.Handler(func(ws *websocket.Conn) {
-			defer ws.Close()
-			log.Printf("Client connected: %s", ws.Request().RemoteAddr)
+		ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+		if err != nil {
+			return err
+		}
+		defer ws.Close()
+		log.Printf("Client connected: %s", c.Request().RemoteAddr)
 
-			peer := &Peer{
-				id:       uuid.New().String(),
-				ws:       ws,
-				answerCh: make(chan webrtc.SessionDescription, 1),
+		peer := &Peer{
+			id:       uuid.New().String(),
+			ws:       ws,
+			answerCh: make(chan webrtc.SessionDescription, 1),
+		}
+		defer room.RemovePeer(peer.id)
+
+		for {
+			var sdp webrtc.SessionDescription
+			if err := ws.ReadJSON(&sdp); err != nil {
+				log.Printf("Connection closed: %v", err)
+				return nil
 			}
-			defer room.RemovePeer(peer.id)
 
-			for {
-				var sdp webrtc.SessionDescription
-				if err := websocket.JSON.Receive(ws, &sdp); err != nil {
-					log.Printf("Connection closed: %v", err)
-					return
+			switch sdp.Type {
+			case webrtc.SDPTypeOffer:
+				answer, err := handleWebRTCOffer(sdp, room, peer)
+				if err != nil {
+					log.Printf("Error processing offer: %v", err)
+					ws.WriteJSON(map[string]string{"error": "Failed to process offer"})
+					continue
 				}
-
-				switch sdp.Type {
-				case webrtc.SDPTypeOffer:
-					answer, err := handleWebRTCOffer(sdp, room, peer)
-					if err != nil {
-						log.Printf("Error processing offer: %v", err)
-						websocket.JSON.Send(ws, map[string]string{"error": "Failed to process offer"})
-						continue
-					}
-					websocket.JSON.Send(ws, answer)
-				case webrtc.SDPTypeAnswer:
-					peer.answerCh <- sdp
-				}
+				ws.WriteJSON(answer)
+			case webrtc.SDPTypeAnswer:
+				peer.answerCh <- sdp
 			}
-		}).ServeHTTP(c.Response(), c.Request())
-		return nil
+		}
 	})
 
 	e.Logger.Info("Starting WebRTC server on :1323")

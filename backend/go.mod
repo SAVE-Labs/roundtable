@@ -4,12 +4,13 @@ go 1.25.7
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/labstack/echo/v5 v5.0.3
 	github.com/pion/interceptor v0.1.43
 	github.com/pion/webrtc/v4 v4.2.4
 	github.com/pressly/goose/v3 v3.27.0
-	golang.org/x/net v0.50.0
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -40,6 +41,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
@@ -47,5 +49,4 @@ require (
 	modernc.org/libc v1.68.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.46.1 // indirect
 )

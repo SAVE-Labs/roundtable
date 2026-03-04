@@ -5,8 +5,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
-	"golang.org/x/net/websocket"
 
 	"roundtable/backend/db"
 )
@@ -22,7 +22,7 @@ type Peer struct {
 func (p *Peer) SendSDP(sdp webrtc.SessionDescription) error {
 	p.wsMu.Lock()
 	defer p.wsMu.Unlock()
-	return websocket.JSON.Send(p.ws, sdp)
+	return p.ws.WriteJSON(sdp)
 }
 
 type Room struct {
