@@ -30,19 +30,31 @@ const (
 	AudioFocusPlayback
 )
 
+const (
+	ServerFormFieldName = iota
+	ServerFormFieldURL
+)
+
 type Model struct {
-	Username     string
-	ServerInput  string
 	ServerURL    *url.URL
 	WebsocketURL *url.URL
 
 	Cursor        int
 	Channels      []Channel
 	ActiveChannel *Channel
+	RoomFormOpen  bool
+	RoomFormName  string
+	RoomFormErr   string
 
-	Servers        []ServerOption
-	ServerCursor   int
-	ServerSelected int
+	Servers         []ServerOption
+	ServerCursor    int
+	ServerSelected  int
+	ServerErr       string
+	ServerFormErr   string
+	ServerFormOpen  bool
+	ServerFormField int
+	ServerFormName  string
+	ServerFormURL   string
 
 	Tab int
 
@@ -64,26 +76,15 @@ type Model struct {
 }
 
 func New() Model {
-	serverURL, _ := url.Parse(defaultBackendBaseURL)
-	wsURL, _ := url.Parse(defaultBackendWS)
-
 	return Model{
-		ServerURL:    serverURL,
-		WebsocketURL: wsURL,
-		Channels: []Channel{
-			{ID: "general", Name: "General"},
-			{ID: "offtopic", Name: "Off Topic"},
-		},
+		ServerURL:    nil,
+		WebsocketURL: nil,
+		Channels:     []Channel{},
 		Servers: []ServerOption{
 			{
 				Name:    "Localhost",
 				HTTPURL: defaultBackendBaseURL,
 				WSURL:   defaultBackendWS,
-			},
-			{
-				Name:    "santing.net:8654",
-				HTTPURL: "http://santing.net:8654",
-				WSURL:   "ws://santing.net:8654/ws",
 			},
 		},
 		ServerSelected:        0,
