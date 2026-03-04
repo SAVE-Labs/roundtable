@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -192,6 +193,7 @@ type WebRTCClient struct {
 }
 
 func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient, error) {
+	log.Printf("webrtc: init client ws_url=%s", wsURL)
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{
@@ -209,17 +211,20 @@ func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient,
 		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 	})
 	if err != nil {
+		log.Printf("webrtc: create peer connection failed ws_url=%s err=%v", wsURL, err)
 		return nil, fmt.Errorf("create peer connection: %w", err)
 	}
 
 	encoder, err := opus.NewEncoder(audioSampleRate, audioChannels, opus.AppVoIP)
 	if err != nil {
+		log.Printf("webrtc: create opus encoder failed ws_url=%s err=%v", wsURL, err)
 		peer.Close()
 		return nil, fmt.Errorf("create opus encoder: %w", err)
 	}
 
 	decoder, err := opus.NewDecoder(audioSampleRate, audioChannels)
 	if err != nil {
+		log.Printf("webrtc: create opus decoder failed ws_url=%s err=%v", wsURL, err)
 		peer.Close()
 		return nil, fmt.Errorf("create opus decoder: %w", err)
 	}
@@ -254,12 +259,14 @@ func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient,
 		Channels:  audioChannels,
 	}, "audio", "roundtable-tui")
 	if err != nil {
+		log.Printf("webrtc: create local track failed ws_url=%s err=%v", wsURL, err)
 		peer.Close()
 		return nil, fmt.Errorf("create local audio track: %w", err)
 	}
 
 	rtpSender, err := peer.AddTrack(track)
 	if err != nil {
+		log.Printf("webrtc: add local track failed ws_url=%s err=%v", wsURL, err)
 		peer.Close()
 		return nil, fmt.Errorf("add local audio track: %w", err)
 	}
@@ -277,12 +284,14 @@ func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient,
 
 	offer, err := peer.CreateOffer(nil)
 	if err != nil {
+		log.Printf("webrtc: create offer failed ws_url=%s err=%v", wsURL, err)
 		peer.Close()
 		return nil, fmt.Errorf("create offer: %w", err)
 	}
 
 	gatherComplete := webrtc.GatheringCompletePromise(peer)
 	if err := peer.SetLocalDescription(offer); err != nil {
+		log.Printf("webrtc: set local description failed ws_url=%s err=%v", wsURL, err)
 		peer.Close()
 		return nil, fmt.Errorf("set local description: %w", err)
 	}
@@ -296,47 +305,59 @@ func NewWebRTCClient(wsURL string, onRemotePCM16LE func([]byte)) (*WebRTCClient,
 		}
 		serverOrigin = scheme + "://" + parsedWS.Host
 	}
+	log.Printf("webrtc: dialing websocket ws_url=%s origin=%s", wsURL, serverOrigin)
 
 	ws, err := websocket.Dial(wsURL, "", serverOrigin)
 	if err != nil {
+		log.Printf("webrtc: dial websocket failed ws_url=%s origin=%s err=%v", wsURL, serverOrigin, err)
 		peer.Close()
 		return nil, fmt.Errorf("dial websocket: %w", err)
 	}
 	client.ws = ws
+	log.Printf("webrtc: websocket connected ws_url=%s", wsURL)
 
 	localDesc := peer.LocalDescription()
 	if localDesc == nil {
+		log.Printf("webrtc: missing local description ws_url=%s", wsURL)
 		client.Close()
 		return nil, fmt.Errorf("missing local description")
 	}
 
 	offerBytes, err := json.Marshal(localDesc)
 	if err != nil {
+		log.Printf("webrtc: marshal offer failed ws_url=%s err=%v", wsURL, err)
 		client.Close()
 		return nil, fmt.Errorf("marshal offer: %w", err)
 	}
 
 	if err := client.sendSignalingBytes(offerBytes); err != nil {
+		log.Printf("webrtc: send offer failed ws_url=%s err=%v", wsURL, err)
 		client.Close()
 		return nil, fmt.Errorf("send offer: %w", err)
 	}
+	log.Printf("webrtc: offer sent ws_url=%s", wsURL)
 
 	var answerBytes []byte
 	if err := websocket.Message.Receive(ws, &answerBytes); err != nil {
+		log.Printf("webrtc: receive answer failed ws_url=%s err=%v", wsURL, err)
 		client.Close()
 		return nil, fmt.Errorf("receive answer: %w", err)
 	}
+	log.Printf("webrtc: answer received ws_url=%s bytes=%d", wsURL, len(answerBytes))
 
 	var answer webrtc.SessionDescription
 	if err := json.Unmarshal(answerBytes, &answer); err != nil {
+		log.Printf("webrtc: decode answer failed ws_url=%s err=%v", wsURL, err)
 		client.Close()
 		return nil, fmt.Errorf("decode answer: %w", err)
 	}
 
 	if err := peer.SetRemoteDescription(answer); err != nil {
+		log.Printf("webrtc: set remote description failed ws_url=%s err=%v", wsURL, err)
 		client.Close()
 		return nil, fmt.Errorf("set remote description: %w", err)
 	}
+	log.Printf("webrtc: signaling established ws_url=%s", wsURL)
 
 	go client.signalingReadLoop()
 
@@ -347,15 +368,19 @@ func (c *WebRTCClient) signalingReadLoop() {
 	for {
 		var msgBytes []byte
 		if err := websocket.Message.Receive(c.ws, &msgBytes); err != nil {
+			log.Printf("webrtc: signaling loop receive failed err=%v", err)
 			return
 		}
 
 		var sdp webrtc.SessionDescription
 		if err := json.Unmarshal(msgBytes, &sdp); err != nil {
+			log.Printf("webrtc: signaling loop decode failed err=%v", err)
 			continue
 		}
 
-		_ = c.handleRemoteSDP(sdp)
+		if err := c.handleRemoteSDP(sdp); err != nil {
+			log.Printf("webrtc: handle remote sdp failed type=%s err=%v", sdp.Type.String(), err)
+		}
 	}
 }
 
@@ -464,10 +489,12 @@ func (c *WebRTCClient) IsMuted() bool {
 
 func (c *WebRTCClient) Close() {
 	if c.ws != nil {
+		log.Printf("webrtc: closing websocket")
 		c.ws.Close()
 		c.ws = nil
 	}
 	if c.peer != nil {
+		log.Printf("webrtc: closing peer connection")
 		c.peer.Close()
 		c.peer = nil
 	}

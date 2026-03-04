@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 
@@ -134,6 +135,9 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 			if wsErr != nil {
 				m.AudioErr = wsErr.Error()
 			} else {
+				if !strings.HasSuffix(strings.TrimRight(wsURL.Path, "/"), "/ws") {
+					wsURL.Path = strings.TrimRight(wsURL.Path, "/") + "/ws"
+				}
 				m.ServerURL = httpURL
 				m.WebsocketURL = wsURL
 				match := -1
@@ -676,7 +680,7 @@ func normalizeServerURLs(raw string) (string, string, error) {
 	}
 
 	if !strings.Contains(trimmed, "://") {
-		trimmed = "http://" + trimmed
+		trimmed = "https://" + trimmed
 	}
 
 	parsed, err := url.Parse(trimmed)
@@ -705,6 +709,10 @@ func normalizeServerURLs(raw string) (string, string, error) {
 		wsURL.Scheme = "wss"
 	default:
 		return "", "", fmt.Errorf("unsupported url scheme: %s", parsed.Scheme)
+	}
+
+	if !strings.HasSuffix(strings.TrimRight(wsURL.Path, "/"), "/ws") {
+		wsURL.Path = strings.TrimRight(wsURL.Path, "/") + "/ws"
 	}
 
 	return httpURL.String(), wsURL.String(), nil
@@ -755,13 +763,17 @@ func (m *Model) joinActiveChannel() error {
 		return fmt.Errorf("no channel selected")
 	}
 	selectedChannel := *m.ActiveChannel
+	log.Printf("join: begin room_id=%s room_name=%s", selectedChannel.ID, selectedChannel.Name)
 	if m.AudioCaptureSelected < 0 || m.AudioCaptureSelected >= len(m.AudioCaptureDevices) {
+		log.Printf("join: missing capture device selection")
 		return fmt.Errorf("select a capture device first")
 	}
 	if m.AudioPlaybackSelected < 0 || m.AudioPlaybackSelected >= len(m.AudioPlaybackDevices) {
+		log.Printf("join: missing playback device selection")
 		return fmt.Errorf("select a playback device first")
 	}
 	if m.WebsocketURL == nil {
+		log.Printf("join: websocket url not configured")
 		return fmt.Errorf("websocket url not configured")
 	}
 
@@ -769,14 +781,17 @@ func (m *Model) joinActiveChannel() error {
 
 	roomWSURL, err := websocketURLForRoom(m.WebsocketURL, selectedChannel.ID)
 	if err != nil {
+		log.Printf("join: websocket url build failed room_id=%s err=%v", selectedChannel.ID, err)
 		return err
 	}
+	log.Printf("join: websocket url=%s", roomWSURL)
 
 	engine := NewAudioEngine()
 	client, err := NewWebRTCClient(roomWSURL, func(pcm []byte) {
 		engine.PushPCM16LE(pcm)
 	})
 	if err != nil {
+		log.Printf("join: webrtc client init failed room_id=%s ws=%s err=%v", selectedChannel.ID, roomWSURL, err)
 		return err
 	}
 
@@ -785,6 +800,7 @@ func (m *Model) joinActiveChannel() error {
 	if err := engine.Start(capture, playback, func(pcm []byte) {
 		_ = client.SendPCM16LE(pcm)
 	}); err != nil {
+		log.Printf("join: audio start failed capture=%s playback=%s err=%v", capture.Name(), playback.Name(), err)
 		client.Close()
 		return err
 	}
@@ -795,6 +811,7 @@ func (m *Model) joinActiveChannel() error {
 	m.ActiveChannel = &selectedChannel
 	m.AudioErr = ""
 	m.SessionStatus = "Connected to " + selectedChannel.Name
+	log.Printf("join: connected room_id=%s room_name=%s", selectedChannel.ID, selectedChannel.Name)
 	return nil
 }
 
