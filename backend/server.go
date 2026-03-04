@@ -20,6 +20,8 @@ import (
 	"roundtable/backend/db"
 )
 
+const version = "0.1.0"
+
 //go:embed db/migrations/*.sql
 var embedMigrations embed.FS
 
@@ -41,6 +43,11 @@ func runMigrations(sqlDB *sql.DB, dialect string) error {
 }
 
 func main() {
+	serverName := os.Getenv("SERVER_NAME")
+	if serverName == "" {
+		serverName = "Roundtable"
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = "postgres://roundtable:roundtable@localhost:5432/roundtable?sslmode=disable"
@@ -71,6 +78,13 @@ func main() {
 		return c.JSON(http.StatusOK, map[string]string{
 			"status":  "ok",
 			"service": "Roundtable WebRTC Server",
+		})
+	})
+
+	e.GET("/info", func(c *echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{
+			"name":    serverName,
+			"version": version,
 		})
 	})
 

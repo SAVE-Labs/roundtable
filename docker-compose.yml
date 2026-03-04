@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: sqlite:/data/roundtable.db
+      SERVER_NAME: Roundtable
     ports:
       - "1323:1323"
     volumes:
