@@ -110,6 +110,13 @@ func main() {
 		return c.JSON(http.StatusCreated, map[string]string{"id": room.id, "name": room.name})
 	})
 
+	e.DELETE("/rooms/:id", func(c *echo.Context) error {
+		if err := rooms.Delete(c.Request().Context(), c.Param("id")); err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "room not found"})
+		}
+		return c.NoContent(http.StatusNoContent)
+	})
+
 	e.GET("/ws", func(c *echo.Context) error {
 		roomID := c.QueryParam("room")
 		room, ok := rooms.Get(c.Request().Context(), roomID)

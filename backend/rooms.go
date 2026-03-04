@@ -115,6 +115,16 @@ func (rr *RoomRegistry) Get(ctx context.Context, id string) (*Room, bool) {
 	return room, true
 }
 
+func (rr *RoomRegistry) Delete(ctx context.Context, id string) error {
+	if err := rr.queries.DeleteRoom(ctx, id); err != nil {
+		return err
+	}
+	rr.mu.Lock()
+	delete(rr.rooms, id)
+	rr.mu.Unlock()
+	return nil
+}
+
 func (rr *RoomRegistry) List(ctx context.Context) ([]map[string]string, error) {
 	dbRooms, err := rr.queries.ListRooms(ctx)
 	if err != nil {
