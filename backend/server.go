@@ -1,22 +1,67 @@
 package main
 
 import (
+	"database/sql"
+	"embed"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver for database/sql
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/pion/webrtc/v4"
+	"github.com/pressly/goose/v3"
 	"golang.org/x/net/websocket"
+	_ "modernc.org/sqlite" // sqlite driver for database/sql
+
+	"roundtable/backend/db"
 )
 
+//go:embed db/migrations/*.sql
+var embedMigrations embed.FS
+
+func openDB(dsn string) (*sql.DB, string, error) {
+	if strings.HasPrefix(dsn, "sqlite:") || strings.HasPrefix(dsn, "file:") {
+		sqlDB, err := sql.Open("sqlite", strings.TrimPrefix(dsn, "sqlite:"))
+		return sqlDB, "sqlite3", err
+	}
+	sqlDB, err := sql.Open("pgx", dsn)
+	return sqlDB, "postgres", err
+}
+
+func runMigrations(sqlDB *sql.DB, dialect string) error {
+	goose.SetBaseFS(embedMigrations)
+	if err := goose.SetDialect(dialect); err != nil {
+		return err
+	}
+	return goose.Up(sqlDB, "db/migrations")
+}
+
 func main() {
-	rooms := NewRoomRegistry()
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://roundtable:roundtable@localhost:5432/roundtable?sslmode=disable"
+	}
+
+	sqlDB, dialect, err := openDB(dsn)
+	if err != nil {
+		log.Fatalf("open db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if err := runMigrations(sqlDB, dialect); err != nil {
+		log.Fatalf("migrations failed: %v", err)
+	}
+
+	queries := db.New(sqlDB)
+
+	rooms := NewRoomRegistry(queries)
 
 	e := echo.New()
 	e.Use(middleware.RequestLogger())
-
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"*"},
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
@@ -30,7 +75,11 @@ func main() {
 	})
 
 	e.GET("/rooms", func(c *echo.Context) error {
-		return c.JSON(http.StatusOK, rooms.List())
+		list, err := rooms.List(c.Request().Context())
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, list)
 	})
 
 	e.POST("/rooms", func(c *echo.Context) error {
@@ -40,13 +89,16 @@ func main() {
 		if err := c.Bind(&req); err != nil || req.Name == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "name required"})
 		}
-		room := rooms.Create(req.Name)
+		room, err := rooms.Create(c.Request().Context(), req.Name)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
 		return c.JSON(http.StatusCreated, map[string]string{"id": room.id, "name": room.name})
 	})
 
 	e.GET("/ws", func(c *echo.Context) error {
 		roomID := c.QueryParam("room")
-		room, ok := rooms.Get(roomID)
+		room, ok := rooms.Get(c.Request().Context(), roomID)
 		if !ok {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "room not found"})
 		}

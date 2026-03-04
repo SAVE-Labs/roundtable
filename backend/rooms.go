@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"sync"
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
 	"golang.org/x/net/websocket"
+
+	"roundtable/backend/db"
 )
 
 type Peer struct {
@@ -54,40 +57,72 @@ func (r *Room) GetPeers() map[string]*Peer {
 }
 
 type RoomRegistry struct {
-	mu    sync.RWMutex
-	rooms map[string]*Room
+	mu      sync.RWMutex
+	rooms   map[string]*Room
+	queries *db.Queries
 }
 
-func NewRoomRegistry() *RoomRegistry {
-	return &RoomRegistry{rooms: make(map[string]*Room)}
+func NewRoomRegistry(queries *db.Queries) *RoomRegistry {
+	return &RoomRegistry{
+		rooms:   make(map[string]*Room),
+		queries: queries,
+	}
 }
 
-func (rr *RoomRegistry) Create(name string) *Room {
+func (rr *RoomRegistry) Create(ctx context.Context, name string) (*Room, error) {
+	dbRoom, err := rr.queries.CreateRoom(ctx, db.CreateRoomParams{
+		ID:   uuid.New().String(),
+		Name: name,
+	})
+	if err != nil {
+		return nil, err
+	}
+	room := &Room{
+		id:          dbRoom.ID,
+		name:        dbRoom.Name,
+		peers:       make(map[string]*Peer),
+		localTracks: make(map[string]*webrtc.TrackLocalStaticRTP),
+	}
+	rr.mu.Lock()
+	rr.rooms[room.id] = room
+	rr.mu.Unlock()
+	return room, nil
+}
+
+// Get returns the in-memory Room for an active session. If the room exists in the
+// database but has no active connections yet (e.g. after a server restart), it is
+// rehydrated into memory on demand.
+func (rr *RoomRegistry) Get(ctx context.Context, id string) (*Room, bool) {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
+
+	if r, ok := rr.rooms[id]; ok {
+		return r, true
+	}
+
+	dbRoom, err := rr.queries.GetRoom(ctx, id)
+	if err != nil {
+		return nil, false
+	}
+
 	room := &Room{
-		id:          uuid.New().String(),
-		name:        name,
+		id:          dbRoom.ID,
+		name:        dbRoom.Name,
 		peers:       make(map[string]*Peer),
 		localTracks: make(map[string]*webrtc.TrackLocalStaticRTP),
 	}
 	rr.rooms[room.id] = room
-	return room
+	return room, true
 }
 
-func (rr *RoomRegistry) Get(id string) (*Room, bool) {
-	rr.mu.RLock()
-	defer rr.mu.RUnlock()
-	r, ok := rr.rooms[id]
-	return r, ok
-}
-
-func (rr *RoomRegistry) List() []map[string]string {
-	rr.mu.RLock()
-	defer rr.mu.RUnlock()
-	list := make([]map[string]string, 0, len(rr.rooms))
-	for _, r := range rr.rooms {
-		list = append(list, map[string]string{"id": r.id, "name": r.name})
+func (rr *RoomRegistry) List(ctx context.Context) ([]map[string]string, error) {
+	dbRooms, err := rr.queries.ListRooms(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return list
+	list := make([]map[string]string, 0, len(dbRooms))
+	for _, r := range dbRooms {
+		list = append(list, map[string]string{"id": r.ID, "name": r.Name})
+	}
+	return list, nil
 }
