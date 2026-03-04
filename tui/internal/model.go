@@ -36,6 +36,9 @@ const (
 )
 
 type Model struct {
+	WindowWidth  int
+	WindowHeight int
+
 	ServerURL    *url.URL
 	WebsocketURL *url.URL
 

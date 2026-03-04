@@ -86,6 +86,11 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ServerInfoMsg:
 		return handleServerInfo(m, msg)
 
+	case tea.WindowSizeMsg:
+		m.WindowWidth = msg.Width
+		m.WindowHeight = msg.Height
+		return m, nil
+
 	case tea.KeyMsg:
 		return handleKeyPress(m, msg)
 	}
@@ -889,12 +894,11 @@ func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func View(m Model) string {
 	var b strings.Builder
 
-	// Header
-	b.WriteString(titleStyle.Render("🎙️  Roundtable Audio Chat"))
-	b.WriteString("\n\n")
+	var tabsBuilder strings.Builder
+	renderTabs(&tabsBuilder, m)
 
-	renderTabs(&b, m)
-	b.WriteString("\n")
+	header := titleStyle.Render("🎙️  Roundtable Audio Chat") + "\n\n" + tabsBuilder.String() + "\n"
+	footer := "\n" + helpStyle.Render("Press q to quit • tab to switch tabs") + "\n"
 
 	// Content
 	var content string
@@ -933,14 +937,34 @@ func View(m Model) string {
 	} else {
 		content = renderAudio(m)
 	}
-	b.WriteString(boxStyle.Render(content))
+	renderedBoxStyle := boxStyle
+	if m.WindowWidth > 0 {
+		contentWidth := m.WindowWidth - renderedBoxStyle.GetHorizontalFrameSize()
+		if contentWidth > 0 {
+			renderedBoxStyle = renderedBoxStyle.Width(contentWidth)
+		}
+	}
+	if m.WindowHeight > 0 {
+		chromeHeight := lipgloss.Height(header) + lipgloss.Height(footer)
+		contentHeight := m.WindowHeight - chromeHeight - renderedBoxStyle.GetVerticalFrameSize()
+		if contentHeight > 0 {
+			renderedBoxStyle = renderedBoxStyle.Height(contentHeight)
+		}
+	}
 
-	// Footer help text
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Press q to quit • tab to switch tabs"))
-	b.WriteString("\n")
+	b.WriteString(header)
+	b.WriteString(renderedBoxStyle.Render(content))
+	b.WriteString(footer)
 
-	return b.String()
+	view := b.String()
+	if m.WindowWidth > 0 && m.WindowHeight > 0 {
+		return lipgloss.NewStyle().
+			Width(m.WindowWidth).
+			Height(m.WindowHeight).
+			Render(view)
+	}
+
+	return view
 }
 
 func renderTabs(b *strings.Builder, m Model) {
