@@ -856,22 +856,38 @@ func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.AudioFocus = AudioFocusPlayback
 	case "up", "k":
 		if m.AudioFocus == AudioFocusCapture {
-			if m.AudioCaptureCursor > 0 {
+			if len(m.AudioCaptureDevices) > 0 && m.AudioCaptureCursor > 0 {
 				m.AudioCaptureCursor--
+			} else if len(m.AudioPlaybackDevices) > 0 {
+				m.AudioFocus = AudioFocusPlayback
+				m.AudioPlaybackCursor = len(m.AudioPlaybackDevices) - 1
 			}
 		} else {
-			if m.AudioPlaybackCursor > 0 {
+			if len(m.AudioPlaybackDevices) > 0 && m.AudioPlaybackCursor > 0 {
 				m.AudioPlaybackCursor--
+			} else if len(m.AudioCaptureDevices) > 0 {
+				m.AudioFocus = AudioFocusCapture
+				m.AudioCaptureCursor = len(m.AudioCaptureDevices) - 1
 			}
 		}
 	case "down", "j":
 		if m.AudioFocus == AudioFocusCapture {
-			if m.AudioCaptureCursor < len(m.AudioCaptureDevices)-1 {
+			if len(m.AudioCaptureDevices) > 0 && m.AudioCaptureCursor < len(m.AudioCaptureDevices)-1 {
 				m.AudioCaptureCursor++
+			} else if len(m.AudioPlaybackDevices) > 0 {
+				m.AudioFocus = AudioFocusPlayback
+				m.AudioPlaybackCursor = 0
+			} else if len(m.AudioCaptureDevices) > 0 {
+				m.AudioCaptureCursor = 0
 			}
 		} else {
-			if m.AudioPlaybackCursor < len(m.AudioPlaybackDevices)-1 {
+			if len(m.AudioPlaybackDevices) > 0 && m.AudioPlaybackCursor < len(m.AudioPlaybackDevices)-1 {
 				m.AudioPlaybackCursor++
+			} else if len(m.AudioCaptureDevices) > 0 {
+				m.AudioFocus = AudioFocusCapture
+				m.AudioCaptureCursor = 0
+			} else if len(m.AudioPlaybackDevices) > 0 {
+				m.AudioPlaybackCursor = 0
 			}
 		}
 	case " ":
@@ -1170,7 +1186,7 @@ func renderAudio(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Audio Devices"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("c=capture • p=playback • ↑/↓ to move • space to select • r to reload"))
+	b.WriteString(helpStyle.Render("↑/↓ move through all devices • c capture • p playback • space to select • r to reload"))
 	b.WriteString("\n\n")
 
 	// Capture devices
