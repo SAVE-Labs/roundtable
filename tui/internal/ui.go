@@ -11,11 +11,11 @@ import (
 
 var (
 	// Color scheme
-	primaryColor   = lipgloss.Color("205") // Pink
-	secondaryColor = lipgloss.Color("86")  // Cyan
-	accentColor    = lipgloss.Color("220") // Yellow/Gold
-	mutedColor     = lipgloss.Color("241") // Gray
-	errorColor     = lipgloss.Color("196") // Red
+	primaryColor   = lipgloss.Color("#BD93F9") // Dracula Purple
+	secondaryColor = lipgloss.Color("#8BE9FD") // Dracula Cyan
+	accentColor    = lipgloss.Color("#50FA7B") // Dracula Green
+	mutedColor     = lipgloss.Color("#6272A4") // Dracula Comment
+	errorColor     = lipgloss.Color("#FF5555") // Dracula Red
 
 	// Styles
 	titleStyle = lipgloss.NewStyle().
@@ -25,7 +25,7 @@ var (
 
 	tabActiveStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("15")).
+			Foreground(lipgloss.Color("#F8F8F2")).
 			Background(primaryColor).
 			Padding(0, 2)
 
