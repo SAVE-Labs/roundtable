@@ -105,6 +105,14 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 
 	cfg := msg.Config
 	m.MicMuted = cfg.MicMuted
+	m.NoiseGateEnabled = true
+	m.NoiseGateThresholdDB = defaultNoiseGateThresholdDB
+	if cfg.NoiseGateEnabled != nil {
+		m.NoiseGateEnabled = *cfg.NoiseGateEnabled
+	}
+	if cfg.NoiseGateThreshold != nil {
+		m.NoiseGateThresholdDB = clampNoiseGateThresholdDB(*cfg.NoiseGateThreshold)
+	}
 	m.ServerSelected = -1
 	m.ServerCursor = 0
 	m.ServerURL = nil
@@ -792,6 +800,15 @@ func (m *Model) joinActiveChannel() error {
 	log.Printf("join: websocket url=%s", roomWSURL)
 
 	engine := NewAudioEngine()
+	noiseGate := NewNoiseGate(
+		audioSampleRate,
+		audioFrameSamples,
+		m.NoiseGateThresholdDB,
+		defaultNoiseGateAttackMs,
+		defaultNoiseGateReleaseMs,
+		defaultNoiseGateHoldMs,
+	)
+	noiseGate.SetEnabled(m.NoiseGateEnabled)
 	client, err := NewWebRTCClient(roomWSURL, func(pcm []byte) {
 		engine.PushPCM16LE(pcm)
 	})
@@ -803,6 +820,7 @@ func (m *Model) joinActiveChannel() error {
 	capture := m.AudioCaptureDevices[m.AudioCaptureSelected]
 	playback := m.AudioPlaybackDevices[m.AudioPlaybackSelected]
 	if err := engine.Start(capture, playback, func(pcm []byte) {
+		noiseGate.ProcessPCM16LE(pcm)
 		_ = client.SendPCM16LE(pcm)
 	}); err != nil {
 		log.Printf("join: audio start failed capture=%s playback=%s err=%v", capture.Name(), playback.Name(), err)
@@ -812,6 +830,7 @@ func (m *Model) joinActiveChannel() error {
 
 	m.WebRTCClient = client
 	m.AudioEngine = engine
+	m.NoiseGate = noiseGate
 	m.WebRTCClient.SetMuted(m.MicMuted)
 	m.ActiveChannel = &selectedChannel
 	m.AudioErr = ""
@@ -844,12 +863,38 @@ func (m *Model) leaveChannel() {
 		m.AudioEngine.Close()
 		m.AudioEngine = nil
 	}
+	m.NoiseGate = nil
 	m.ActiveChannel = nil
 	m.SessionStatus = "Not connected"
 }
 
 func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "g":
+		m.NoiseGateEnabled = !m.NoiseGateEnabled
+		if m.NoiseGate != nil {
+			m.NoiseGate.SetEnabled(m.NoiseGateEnabled)
+		}
+		if m.NoiseGateEnabled {
+			m.SessionStatus = "Noise gate enabled"
+		} else {
+			m.SessionStatus = "Noise gate disabled"
+		}
+		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case "[", "-":
+		m.NoiseGateThresholdDB = clampNoiseGateThresholdDB(m.NoiseGateThresholdDB - noiseGateThresholdStepDB)
+		if m.NoiseGate != nil {
+			m.NoiseGate.SetThresholdDB(m.NoiseGateThresholdDB)
+		}
+		m.SessionStatus = fmt.Sprintf("Noise gate threshold %.1f dB", m.NoiseGateThresholdDB)
+		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case "]", "=":
+		m.NoiseGateThresholdDB = clampNoiseGateThresholdDB(m.NoiseGateThresholdDB + noiseGateThresholdStepDB)
+		if m.NoiseGate != nil {
+			m.NoiseGate.SetThresholdDB(m.NoiseGateThresholdDB)
+		}
+		m.SessionStatus = fmt.Sprintf("Noise gate threshold %.1f dB", m.NoiseGateThresholdDB)
+		return m, SaveConfigCmd(m.ConfigSnapshot())
 	case "c":
 		m.AudioFocus = AudioFocusCapture
 	case "p":
@@ -1186,7 +1231,16 @@ func renderAudio(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Audio Devices"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move through all devices • c capture • p playback • space to select • r to reload"))
+	b.WriteString(helpStyle.Render("↑/↓ move through all devices • c capture • p playback • space to select • r reload • g gate on/off • [/] threshold"))
+	b.WriteString("\n\n")
+
+	gateStatus := "off"
+	if m.NoiseGateEnabled {
+		gateStatus = "on"
+	}
+	b.WriteString(mutedStyle.Render("Noise gate: " + gateStatus + " (g)"))
+	b.WriteString("\n")
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("Threshold: %.1f dBFS ([/])", m.NoiseGateThresholdDB)))
 	b.WriteString("\n\n")
 
 	// Capture devices

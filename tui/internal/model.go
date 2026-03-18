@@ -73,9 +73,13 @@ type Model struct {
 	AudioErr              string
 
 	AudioEngine   *AudioEngine
+	NoiseGate     *NoiseGate
 	WebRTCClient  *WebRTCClient
 	SessionStatus string
 	MicMuted      bool
+
+	NoiseGateEnabled     bool
+	NoiseGateThresholdDB float64
 }
 
 func New() Model {
@@ -96,6 +100,8 @@ func New() Model {
 		AudioCaptureSelected:  -1,
 		AudioPlaybackSelected: -1,
 		SessionStatus:         "Not connected",
+		NoiseGateEnabled:      true,
+		NoiseGateThresholdDB:  defaultNoiseGateThresholdDB,
 	}
 }
 
