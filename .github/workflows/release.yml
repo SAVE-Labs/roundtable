@@ -8,6 +8,8 @@ on:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +18,7 @@ jobs:
           go-version-file: backend/go.mod
 
       - name: Install opus
-        run: sudo apt-get install -y libopus-dev
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
 
       - name: Build backend
         working-directory: backend
