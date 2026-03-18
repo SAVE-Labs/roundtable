@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+
+      - name: Install opus
+        run: sudo apt-get install -y libopus-dev
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          VERSION="main-$(git rev-parse --short HEAD)"
+          LDFLAGS="-X main.version=${VERSION}"
+          mkdir -p ../dist
+          CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags "$LDFLAGS" -o ../dist/roundtable-backend-linux-amd64  .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o ../dist/roundtable-backend-darwin-arm64 .
+          echo "$VERSION" > ../dist/version.txt
+
+      - name: Build TUI (linux/amd64)
+        working-directory: tui
+        run: |
+          VERSION="main-$(git rev-parse --short HEAD)"
+          LDFLAGS="-X main.version=${VERSION}"
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o ../dist/roundtable-tui-linux-amd64 .
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(cat dist/version.txt)
+          gh release delete latest --yes || true
+          gh release create latest \
+            --title "latest ($VERSION)" \
+            --notes "Built from commit $(git rev-parse --short HEAD)" \
+            dist/roundtable-backend-linux-amd64 \
+            dist/roundtable-backend-darwin-arm64 \
+            dist/roundtable-tui-linux-amd64
