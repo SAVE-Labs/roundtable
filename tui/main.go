@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/SAVE-Labs/roundtable/tui/internal"
 	tea "github.com/charmbracelet/bubbletea"
+	hook "github.com/robotn/gohook"
 )
 
 func defaultLogPath() (string, error) {
@@ -20,6 +22,28 @@ func defaultLogPath() (string, error) {
 	}
 
 	return filepath.Join(baseDir, "roundtable", "tui.log"), nil
+}
+
+func startGlobalHotkeys(program *tea.Program) func() {
+	if strings.EqualFold(os.Getenv("ROUNDTABLE_TUI_DISABLE_GLOBAL_HOTKEYS"), "1") {
+		return func() {}
+	}
+
+	hook.Register(hook.KeyDown, []string{"m", "ctrl", "shift"}, func(hook.Event) {
+		program.Send(internal.GlobalMuteToggleMsg{})
+	})
+
+	events := hook.Start()
+	done := make(chan struct{})
+	go func() {
+		<-hook.Process(events)
+		close(done)
+	}()
+
+	return func() {
+		hook.End()
+		<-done
+	}
 }
 
 func main() {
@@ -42,6 +66,9 @@ func main() {
 	m := internal.New()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
+	stopHotkeys := startGlobalHotkeys(p)
+	defer stopHotkeys()
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

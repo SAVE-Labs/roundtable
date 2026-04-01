@@ -42,6 +42,8 @@ require (
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/robotn/gohook v0.42.3 // indirect
+	github.com/vcaesar/keycode v0.10.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/crypto v0.47.0 // indirect

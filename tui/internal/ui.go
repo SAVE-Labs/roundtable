@@ -74,6 +74,9 @@ var (
 
 type meterTickMsg struct{}
 
+// GlobalMuteToggleMsg is emitted by the process-level hotkey listener.
+type GlobalMuteToggleMsg struct{}
+
 func meterTickCmd() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
 		return meterTickMsg{}
@@ -110,6 +113,9 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case meterTickMsg:
 		return m, meterTickCmd()
+
+	case GlobalMuteToggleMsg:
+		return toggleMuteCmd(m)
 
 	case tea.KeyMsg:
 		return handleKeyPress(m, msg)
@@ -480,11 +486,7 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "m":
-		m.MicMuted = !m.MicMuted
-		if m.WebRTCClient != nil {
-			m.WebRTCClient.SetMuted(m.MicMuted)
-		}
-		return m, SaveConfigCmd(m.ConfigSnapshot())
+		return toggleMuteCmd(m)
 
 	default:
 		switch m.Tab {
@@ -498,6 +500,19 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func toggleMuteCmd(m Model) (tea.Model, tea.Cmd) {
+	m.MicMuted = !m.MicMuted
+	if m.WebRTCClient != nil {
+		m.WebRTCClient.SetMuted(m.MicMuted)
+	}
+	if m.MicMuted {
+		m.SessionStatus = "Microphone muted"
+	} else {
+		m.SessionStatus = "Microphone unmuted"
+	}
+	return m, SaveConfigCmd(m.ConfigSnapshot())
 }
 
 func handleRoomFormKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -976,7 +991,7 @@ func View(m Model) string {
 	renderTabs(&tabsBuilder, m)
 
 	header := titleStyle.Render("🎙️  Roundtable Audio Chat") + "\n\n" + tabsBuilder.String() + "\n"
-	footer := "\n" + helpStyle.Render("Press q to quit • tab to switch tabs") + "\n"
+	footer := "\n" + helpStyle.Render("Press q to quit • tab to switch tabs • global mute: Ctrl+Shift+M") + "\n"
 
 	// Content
 	var content string
