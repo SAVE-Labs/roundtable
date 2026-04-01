@@ -7,44 +7,44 @@ import (
 )
 
 const (
-	defaultNoiseGateThresholdDB = -42.0
-	defaultNoiseGateAttackMs    = 5.0
-	defaultNoiseGateReleaseMs   = 180.0
-	defaultNoiseGateHoldMs      = 120.0
-	noiseGateMinThresholdDB     = -70.0
-	noiseGateMaxThresholdDB     = -20.0
-	noiseGateThresholdStepDB    = 1.0
+	defaultVoiceActivationThresholdDB = -42.0
+	defaultVoiceActivationAttackMs    = 5.0
+	defaultVoiceActivationReleaseMs   = 180.0
+	defaultVoiceActivationHoldMs      = 120.0
+	voiceActivationMinThresholdDB     = -70.0
+	voiceActivationMaxThresholdDB     = -20.0
+	voiceActivationThresholdStepDB    = 1.0
 )
 
-// NoiseGate attenuates low-level input between speech to reduce steady room noise.
-type NoiseGate struct {
+// VoiceActivation attenuates low-level input between speech to reduce steady room noise.
+type VoiceActivation struct {
 	mu sync.Mutex
 
-	enabled         bool
 	thresholdDB     float64
 	thresholdLinear float64
 	attackCoeff     float64
 	releaseCoeff    float64
 	holdFrames      int
 
-	holdCounter int
-	gain        float64
+	holdCounter  int
+	gain         float64
+	inputLevelDB float64
 }
 
-func NewNoiseGate(sampleRate, frameSamples int, thresholdDB, attackMs, releaseMs, holdMs float64) *NoiseGate {
+func NewVoiceActivation(sampleRate, frameSamples int, thresholdDB, attackMs, releaseMs, holdMs float64) *VoiceActivation {
 	frameMs := 10.0
 	if sampleRate > 0 && frameSamples > 0 {
 		frameMs = (float64(frameSamples) / float64(sampleRate)) * 1000.0
 	}
 
-	g := &NoiseGate{
-		enabled:         true,
-		thresholdDB:     clampNoiseGateThresholdDB(thresholdDB),
+	g := &VoiceActivation{
+		thresholdDB:     clampVoiceActivationThresholdDB(thresholdDB),
 		thresholdLinear: dbToLinear(thresholdDB),
 		attackCoeff:     smoothingCoeff(frameMs, attackMs),
 		releaseCoeff:    smoothingCoeff(frameMs, releaseMs),
 		holdFrames:      msToFrames(frameMs, holdMs),
 		gain:            1.0,
+		inputLevelDB:    voiceActivationMinThresholdDB,
 	}
 	g.thresholdLinear = dbToLinear(g.thresholdDB)
 
@@ -55,30 +55,20 @@ func NewNoiseGate(sampleRate, frameSamples int, thresholdDB, attackMs, releaseMs
 	return g
 }
 
-func (g *NoiseGate) SetEnabled(enabled bool) {
+func (g *VoiceActivation) SetThresholdDB(thresholdDB float64) {
 	g.mu.Lock()
-	g.enabled = enabled
-	g.mu.Unlock()
-}
-
-func (g *NoiseGate) SetThresholdDB(thresholdDB float64) {
-	g.mu.Lock()
-	g.thresholdDB = clampNoiseGateThresholdDB(thresholdDB)
+	g.thresholdDB = clampVoiceActivationThresholdDB(thresholdDB)
 	g.thresholdLinear = dbToLinear(g.thresholdDB)
 	g.mu.Unlock()
 }
 
-func (g *NoiseGate) ProcessPCM16LE(pcm []byte) {
+func (g *VoiceActivation) ProcessPCM16LE(pcm []byte) {
 	if len(pcm) < 2 {
 		return
 	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-
-	if !g.enabled {
-		return
-	}
 
 	sampleCount := len(pcm) / audioBytesPerSample
 	if sampleCount == 0 {
@@ -94,6 +84,14 @@ func (g *NoiseGate) ProcessPCM16LE(pcm []byte) {
 	}
 
 	rms := math.Sqrt(energy / float64(sampleCount))
+	inputLevelDB := linearToDB(rms)
+	if inputLevelDB < voiceActivationMinThresholdDB {
+		inputLevelDB = voiceActivationMinThresholdDB
+	}
+	if inputLevelDB > 0 {
+		inputLevelDB = 0
+	}
+	g.inputLevelDB = inputLevelDB
 
 	target := 0.0
 	if rms >= g.thresholdLinear {
@@ -122,8 +120,21 @@ func (g *NoiseGate) ProcessPCM16LE(pcm []byte) {
 	}
 }
 
+func (g *VoiceActivation) InputLevelDB() float64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.inputLevelDB
+}
+
 func dbToLinear(db float64) float64 {
 	return math.Pow(10.0, db/20.0)
+}
+
+func linearToDB(linear float64) float64 {
+	if linear <= 0 {
+		return -120.0
+	}
+	return 20.0 * math.Log10(linear)
 }
 
 func smoothingCoeff(frameMs, timeMs float64) float64 {
@@ -147,12 +158,12 @@ func msToFrames(frameMs, holdMs float64) int {
 	return int(math.Ceil(holdMs / frameMs))
 }
 
-func clampNoiseGateThresholdDB(v float64) float64 {
-	if v < noiseGateMinThresholdDB {
-		return noiseGateMinThresholdDB
+func clampVoiceActivationThresholdDB(v float64) float64 {
+	if v < voiceActivationMinThresholdDB {
+		return voiceActivationMinThresholdDB
 	}
-	if v > noiseGateMaxThresholdDB {
-		return noiseGateMaxThresholdDB
+	if v > voiceActivationMaxThresholdDB {
+		return voiceActivationMaxThresholdDB
 	}
 	return v
 }

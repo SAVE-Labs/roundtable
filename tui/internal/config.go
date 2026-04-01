@@ -19,8 +19,7 @@ type AppConfig struct {
 	CaptureDeviceName  string         `json:"capture_device_name,omitempty"`
 	PlaybackDeviceName string         `json:"playback_device_name,omitempty"`
 	MicMuted           bool           `json:"mic_muted,omitempty"`
-	NoiseGateEnabled   *bool          `json:"noise_gate_enabled,omitempty"`
-	NoiseGateThreshold *float64       `json:"noise_gate_threshold_db,omitempty"`
+	VoiceActivationThreshold *float64 `json:"voice_activation_threshold_db,omitempty"`
 	LastUsedServer     ServerConfig   `json:"last_used_server,omitempty"`
 	Servers            []ServerConfig `json:"servers,omitempty"`
 }
@@ -98,10 +97,8 @@ func (m Model) ConfigSnapshot() AppConfig {
 		MicMuted: m.MicMuted,
 	}
 
-	noiseGateEnabled := m.NoiseGateEnabled
-	noiseGateThreshold := m.NoiseGateThresholdDB
-	cfg.NoiseGateEnabled = &noiseGateEnabled
-	cfg.NoiseGateThreshold = &noiseGateThreshold
+	voiceActivationThreshold := m.VoiceActivationThresholdDB
+	cfg.VoiceActivationThreshold = &voiceActivationThreshold
 
 	if m.ServerSelected >= 0 && m.ServerSelected < len(m.Servers) {
 		s := m.Servers[m.ServerSelected]

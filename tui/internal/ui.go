@@ -3,8 +3,10 @@ package internal
 import (
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -61,7 +63,22 @@ var (
 
 	mutedStyle = lipgloss.NewStyle().
 			Foreground(mutedColor)
+
+	meterFillStyle = lipgloss.NewStyle().
+			Foreground(accentColor)
+
+	meterCutoffStyle = lipgloss.NewStyle().
+				Foreground(errorColor).
+				Bold(true)
 )
+
+type meterTickMsg struct{}
+
+func meterTickCmd() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
+		return meterTickMsg{}
+	})
+}
 
 func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -91,6 +108,9 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.WindowHeight = msg.Height
 		return m, nil
 
+	case meterTickMsg:
+		return m, meterTickCmd()
+
 	case tea.KeyMsg:
 		return handleKeyPress(m, msg)
 	}
@@ -105,13 +125,9 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 
 	cfg := msg.Config
 	m.MicMuted = cfg.MicMuted
-	m.NoiseGateEnabled = true
-	m.NoiseGateThresholdDB = defaultNoiseGateThresholdDB
-	if cfg.NoiseGateEnabled != nil {
-		m.NoiseGateEnabled = *cfg.NoiseGateEnabled
-	}
-	if cfg.NoiseGateThreshold != nil {
-		m.NoiseGateThresholdDB = clampNoiseGateThresholdDB(*cfg.NoiseGateThreshold)
+	m.VoiceActivationThresholdDB = defaultVoiceActivationThresholdDB
+	if cfg.VoiceActivationThreshold != nil {
+		m.VoiceActivationThresholdDB = clampVoiceActivationThresholdDB(*cfg.VoiceActivationThreshold)
 	}
 	m.ServerSelected = -1
 	m.ServerCursor = 0
@@ -407,6 +423,10 @@ func handleAudioDevices(m Model, msg DevicesMsg) (tea.Model, tea.Cmd) {
 		}
 		m.AudioCaptureName = ""
 		m.AudioPlaybackName = ""
+
+		if err := m.ensureMicMonitor(); err != nil {
+			m.AudioErr = err.Error()
+		}
 	}
 	return m, nil
 }
@@ -791,6 +811,7 @@ func (m *Model) joinActiveChannel() error {
 	}
 
 	m.leaveChannel()
+	m.stopMicMonitor()
 
 	roomWSURL, err := websocketURLForRoom(m.WebsocketURL, selectedChannel.ID)
 	if err != nil {
@@ -800,15 +821,14 @@ func (m *Model) joinActiveChannel() error {
 	log.Printf("join: websocket url=%s", roomWSURL)
 
 	engine := NewAudioEngine()
-	noiseGate := NewNoiseGate(
+	voiceActivation := NewVoiceActivation(
 		audioSampleRate,
 		audioFrameSamples,
-		m.NoiseGateThresholdDB,
-		defaultNoiseGateAttackMs,
-		defaultNoiseGateReleaseMs,
-		defaultNoiseGateHoldMs,
+		m.VoiceActivationThresholdDB,
+		defaultVoiceActivationAttackMs,
+		defaultVoiceActivationReleaseMs,
+		defaultVoiceActivationHoldMs,
 	)
-	noiseGate.SetEnabled(m.NoiseGateEnabled)
 	client, err := NewWebRTCClient(roomWSURL, func(pcm []byte) {
 		engine.PushPCM16LE(pcm)
 	})
@@ -820,7 +840,7 @@ func (m *Model) joinActiveChannel() error {
 	capture := m.AudioCaptureDevices[m.AudioCaptureSelected]
 	playback := m.AudioPlaybackDevices[m.AudioPlaybackSelected]
 	if err := engine.Start(capture, playback, func(pcm []byte) {
-		noiseGate.ProcessPCM16LE(pcm)
+		voiceActivation.ProcessPCM16LE(pcm)
 		_ = client.SendPCM16LE(pcm)
 	}); err != nil {
 		log.Printf("join: audio start failed capture=%s playback=%s err=%v", capture.Name(), playback.Name(), err)
@@ -830,7 +850,7 @@ func (m *Model) joinActiveChannel() error {
 
 	m.WebRTCClient = client
 	m.AudioEngine = engine
-	m.NoiseGate = noiseGate
+	m.VoiceActivation = voiceActivation
 	m.WebRTCClient.SetMuted(m.MicMuted)
 	m.ActiveChannel = &selectedChannel
 	m.AudioErr = ""
@@ -863,37 +883,29 @@ func (m *Model) leaveChannel() {
 		m.AudioEngine.Close()
 		m.AudioEngine = nil
 	}
-	m.NoiseGate = nil
+	m.VoiceActivation = nil
 	m.ActiveChannel = nil
+	if err := m.ensureMicMonitor(); err != nil {
+		m.AudioErr = err.Error()
+	}
 	m.SessionStatus = "Not connected"
 }
 
 func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "g":
-		m.NoiseGateEnabled = !m.NoiseGateEnabled
-		if m.NoiseGate != nil {
-			m.NoiseGate.SetEnabled(m.NoiseGateEnabled)
-		}
-		if m.NoiseGateEnabled {
-			m.SessionStatus = "Noise gate enabled"
-		} else {
-			m.SessionStatus = "Noise gate disabled"
-		}
-		return m, SaveConfigCmd(m.ConfigSnapshot())
 	case "[", "-":
-		m.NoiseGateThresholdDB = clampNoiseGateThresholdDB(m.NoiseGateThresholdDB - noiseGateThresholdStepDB)
-		if m.NoiseGate != nil {
-			m.NoiseGate.SetThresholdDB(m.NoiseGateThresholdDB)
+		m.VoiceActivationThresholdDB = clampVoiceActivationThresholdDB(m.VoiceActivationThresholdDB - voiceActivationThresholdStepDB)
+		if m.VoiceActivation != nil {
+			m.VoiceActivation.SetThresholdDB(m.VoiceActivationThresholdDB)
 		}
-		m.SessionStatus = fmt.Sprintf("Noise gate threshold %.1f dB", m.NoiseGateThresholdDB)
+		m.SessionStatus = fmt.Sprintf("Voice activation threshold %.1f dB", m.VoiceActivationThresholdDB)
 		return m, SaveConfigCmd(m.ConfigSnapshot())
 	case "]", "=":
-		m.NoiseGateThresholdDB = clampNoiseGateThresholdDB(m.NoiseGateThresholdDB + noiseGateThresholdStepDB)
-		if m.NoiseGate != nil {
-			m.NoiseGate.SetThresholdDB(m.NoiseGateThresholdDB)
+		m.VoiceActivationThresholdDB = clampVoiceActivationThresholdDB(m.VoiceActivationThresholdDB + voiceActivationThresholdStepDB)
+		if m.VoiceActivation != nil {
+			m.VoiceActivation.SetThresholdDB(m.VoiceActivationThresholdDB)
 		}
-		m.SessionStatus = fmt.Sprintf("Noise gate threshold %.1f dB", m.NoiseGateThresholdDB)
+		m.SessionStatus = fmt.Sprintf("Voice activation threshold %.1f dB", m.VoiceActivationThresholdDB)
 		return m, SaveConfigCmd(m.ConfigSnapshot())
 	case "c":
 		m.AudioFocus = AudioFocusCapture
@@ -946,6 +958,11 @@ func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			saved = true
 		}
 		if saved {
+			if m.AudioFocus == AudioFocusCapture {
+				if err := m.ensureMicMonitor(); err != nil {
+					m.AudioErr = err.Error()
+				}
+			}
 			return m, SaveConfigCmd(m.ConfigSnapshot())
 		}
 	}
@@ -1231,16 +1248,14 @@ func renderAudio(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Audio Devices"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move through all devices • c capture • p playback • space to select • r reload • g gate on/off • [/] threshold"))
+	b.WriteString(helpStyle.Render("↑/↓ move through all devices • c capture • p playback • space to select • r reload • [/] threshold"))
 	b.WriteString("\n\n")
 
-	gateStatus := "off"
-	if m.NoiseGateEnabled {
-		gateStatus = "on"
-	}
-	b.WriteString(mutedStyle.Render("Noise gate: " + gateStatus + " (g)"))
+	b.WriteString(mutedStyle.Render("Voice activation: on"))
 	b.WriteString("\n")
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("Threshold: %.1f dBFS ([/])", m.NoiseGateThresholdDB)))
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("Threshold: %.1f dBFS ([/])", m.VoiceActivationThresholdDB)))
+	b.WriteString("\n\n")
+	b.WriteString(renderVoiceActivationMeter(m))
 	b.WriteString("\n\n")
 
 	// Capture devices
@@ -1318,4 +1333,100 @@ func renderAudio(m Model) string {
 	}
 
 	return b.String()
+}
+
+func renderVoiceActivationMeter(m Model) string {
+	const meterWidth = 34
+	const meterMaxDB = 0.0
+
+	levelDB := voiceActivationMinThresholdDB
+	if m.VoiceActivation != nil {
+		levelDB = m.VoiceActivation.InputLevelDB()
+	} else if m.MicMonitor != nil {
+		levelDB = m.MicMonitor.LevelDB()
+	}
+
+	if levelDB < voiceActivationMinThresholdDB {
+		levelDB = voiceActivationMinThresholdDB
+	}
+	if levelDB > meterMaxDB {
+		levelDB = meterMaxDB
+	}
+
+	thresholdDB := clampVoiceActivationThresholdDB(m.VoiceActivationThresholdDB)
+
+	levelPos := meterPosition(levelDB, voiceActivationMinThresholdDB, meterMaxDB, meterWidth)
+	thresholdPos := meterPosition(thresholdDB, voiceActivationMinThresholdDB, meterMaxDB, meterWidth)
+
+	var meter strings.Builder
+	for i := 0; i < meterWidth; i++ {
+		switch {
+		case i == thresholdPos:
+			meter.WriteString(meterCutoffStyle.Render("|"))
+		case i <= levelPos:
+			meter.WriteString(meterFillStyle.Render("█"))
+		default:
+			meter.WriteString(mutedStyle.Render("░"))
+		}
+	}
+
+	return strings.Join([]string{
+		"Mic level:  [" + meter.String() + "]",
+		mutedStyle.Render(fmt.Sprintf("           %.1f dBFS  cutoff %.1f dBFS", levelDB, thresholdDB)),
+	}, "\n")
+}
+
+func (m *Model) ensureMicMonitor() error {
+	if m.ActiveChannel != nil {
+		m.stopMicMonitor()
+		return nil
+	}
+
+	if m.AudioCaptureSelected < 0 || m.AudioCaptureSelected >= len(m.AudioCaptureDevices) {
+		m.stopMicMonitor()
+		return nil
+	}
+
+	selected := m.AudioCaptureDevices[m.AudioCaptureSelected]
+	selectedName := selected.Name()
+	if m.MicMonitor != nil && m.MicMonitor.DeviceName() == selectedName {
+		return nil
+	}
+
+	m.stopMicMonitor()
+	monitor, err := NewMicLevelMonitor(selected)
+	if err != nil {
+		return err
+	}
+	m.MicMonitor = monitor
+	return nil
+}
+
+func (m *Model) stopMicMonitor() {
+	if m.MicMonitor == nil {
+		return
+	}
+	m.MicMonitor.Close()
+	m.MicMonitor = nil
+}
+
+func meterPosition(db, minDB, maxDB float64, width int) int {
+	if width <= 1 {
+		return 0
+	}
+	if db < minDB {
+		db = minDB
+	}
+	if db > maxDB {
+		db = maxDB
+	}
+	norm := (db - minDB) / (maxDB - minDB)
+	pos := int(math.Round(norm * float64(width-1)))
+	if pos < 0 {
+		return 0
+	}
+	if pos >= width {
+		return width - 1
+	}
+	return pos
 }
