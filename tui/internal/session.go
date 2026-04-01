@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -38,8 +39,111 @@ type AudioEngine struct {
 	onCapturePCM func([]byte)
 }
 
+type MicLevelMonitor struct {
+	ctx           *malgo.AllocatedContext
+	captureDevice *malgo.Device
+	deviceName    string
+	levelBits     atomic.Uint64
+}
+
 func NewAudioEngine() *AudioEngine {
 	return &AudioEngine{}
+}
+
+func NewMicLevelMonitor(capture malgo.DeviceInfo) (*MicLevelMonitor, error) {
+	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("init audio context: %w", err)
+	}
+
+	monitor := &MicLevelMonitor{ctx: ctx, deviceName: capture.Name()}
+	monitor.levelBits.Store(math.Float64bits(voiceActivationMinThresholdDB))
+
+	config := malgo.DefaultDeviceConfig(malgo.Capture)
+	config.Capture.Format = malgo.FormatS16
+	config.Capture.Channels = audioChannels
+	config.SampleRate = audioSampleRate
+	config.Alsa.NoMMap = 1
+
+	captureID := capture.ID
+	config.Capture.DeviceID = captureID.Pointer()
+
+	callbacks := malgo.DeviceCallbacks{
+		Data: func(_, input []byte, frameCount uint32) {
+			bytesNeeded := int(frameCount) * audioChannels * audioBytesPerSample
+			if bytesNeeded <= 0 || len(input) == 0 {
+				return
+			}
+			if bytesNeeded > len(input) {
+				bytesNeeded = len(input)
+			}
+			sampleCount := bytesNeeded / audioBytesPerSample
+			if sampleCount == 0 {
+				return
+			}
+
+			var energy float64
+			for i := 0; i < sampleCount; i++ {
+				off := i * audioBytesPerSample
+				s := int16(binary.LittleEndian.Uint16(input[off : off+audioBytesPerSample]))
+				v := float64(s) / 32768.0
+				energy += v * v
+			}
+
+			rms := math.Sqrt(energy / float64(sampleCount))
+			levelDB := linearToDB(rms)
+			if levelDB < voiceActivationMinThresholdDB {
+				levelDB = voiceActivationMinThresholdDB
+			}
+			if levelDB > 0 {
+				levelDB = 0
+			}
+
+			monitor.levelBits.Store(math.Float64bits(levelDB))
+		},
+	}
+
+	dev, err := malgo.InitDevice(ctx.Context, config, callbacks)
+	if err != nil {
+		monitor.Close()
+		return nil, fmt.Errorf("init capture monitor %q: %w", capture.Name(), err)
+	}
+
+	if err := dev.Start(); err != nil {
+		dev.Uninit()
+		monitor.Close()
+		return nil, fmt.Errorf("start capture monitor %q: %w", capture.Name(), err)
+	}
+
+	monitor.captureDevice = dev
+	return monitor, nil
+}
+
+func (m *MicLevelMonitor) LevelDB() float64 {
+	return math.Float64frombits(m.levelBits.Load())
+}
+
+func (m *MicLevelMonitor) DeviceName() string {
+	if m == nil {
+		return ""
+	}
+	return m.deviceName
+}
+
+func (m *MicLevelMonitor) Close() {
+	if m == nil {
+		return
+	}
+	if m.captureDevice != nil {
+		m.captureDevice.Stop()
+		m.captureDevice.Uninit()
+		m.captureDevice = nil
+	}
+	if m.ctx != nil {
+		m.ctx.Uninit()
+		m.ctx.Free()
+		m.ctx = nil
+	}
 }
 
 func (a *AudioEngine) Start(capture malgo.DeviceInfo, playback malgo.DeviceInfo, onCapturePCM func([]byte)) error {

@@ -72,10 +72,14 @@ type Model struct {
 	AudioPlaybackName     string
 	AudioErr              string
 
-	AudioEngine   *AudioEngine
-	WebRTCClient  *WebRTCClient
-	SessionStatus string
-	MicMuted      bool
+	AudioEngine     *AudioEngine
+	MicMonitor      *MicLevelMonitor
+	VoiceActivation *VoiceActivation
+	WebRTCClient    *WebRTCClient
+	SessionStatus   string
+	MicMuted        bool
+
+	VoiceActivationThresholdDB float64
 }
 
 func New() Model {
@@ -90,17 +94,21 @@ func New() Model {
 				WSURL:   defaultBackendWS,
 			},
 		},
-		ServerSelected:        0,
-		Tab:                   TabChannels,
-		AudioFocus:            AudioFocusCapture,
-		AudioCaptureSelected:  -1,
-		AudioPlaybackSelected: -1,
-		SessionStatus:         "Not connected",
+		ServerSelected:             0,
+		Tab:                        TabChannels,
+		AudioFocus:                 AudioFocusCapture,
+		AudioCaptureSelected:       -1,
+		AudioPlaybackSelected:      -1,
+		SessionStatus:              "Not connected",
+		VoiceActivationThresholdDB: defaultVoiceActivationThresholdDB,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return LoadConfigCmd()
+	return tea.Batch(
+		LoadConfigCmd(),
+		meterTickCmd(),
+	)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

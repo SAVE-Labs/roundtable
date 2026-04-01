@@ -19,6 +19,7 @@ type AppConfig struct {
 	CaptureDeviceName  string         `json:"capture_device_name,omitempty"`
 	PlaybackDeviceName string         `json:"playback_device_name,omitempty"`
 	MicMuted           bool           `json:"mic_muted,omitempty"`
+	VoiceActivationThreshold *float64 `json:"voice_activation_threshold_db,omitempty"`
 	LastUsedServer     ServerConfig   `json:"last_used_server,omitempty"`
 	Servers            []ServerConfig `json:"servers,omitempty"`
 }
@@ -92,9 +93,12 @@ func SaveConfigCmd(cfg AppConfig) tea.Cmd {
 
 func (m Model) ConfigSnapshot() AppConfig {
 	cfg := AppConfig{
-		Version:  1,
+		Version:  2,
 		MicMuted: m.MicMuted,
 	}
+
+	voiceActivationThreshold := m.VoiceActivationThresholdDB
+	cfg.VoiceActivationThreshold = &voiceActivationThreshold
 
 	if m.ServerSelected >= 0 && m.ServerSelected < len(m.Servers) {
 		s := m.Servers[m.ServerSelected]
