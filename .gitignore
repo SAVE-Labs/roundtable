@@ -30,3 +30,10 @@ go.work.sum
 # Binaries for tui and backend
 tui/tui
 backend/backend
+
+# DeepFilterNet — cloned + built by tui/build_deepfilter.sh
+tui/deep-filter-net/
+tui/internal/libdf.a
+
+# Desktop app (not active)
+desktop/

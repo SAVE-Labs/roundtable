@@ -37,6 +37,12 @@ type AudioEngine struct {
 	mu           sync.Mutex
 	playbackBuf  []byte
 	onCapturePCM func([]byte)
+
+	df        *DFEngine
+	nsEnabled atomic.Bool
+	micGain   atomic.Uint32 // float32 bits of linear gain, default 1.0
+
+	loopback atomic.Bool
 }
 
 type MicLevelMonitor struct {
@@ -146,7 +152,7 @@ func (m *MicLevelMonitor) Close() {
 	}
 }
 
-func (a *AudioEngine) Start(capture malgo.DeviceInfo, playback malgo.DeviceInfo, onCapturePCM func([]byte)) error {
+func (a *AudioEngine) Start(capture malgo.DeviceInfo, playback malgo.DeviceInfo, onCapturePCM func([]byte), noiseSuppression bool) error {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return fmt.Errorf("init audio context: %w", err)
@@ -154,6 +160,14 @@ func (a *AudioEngine) Start(capture malgo.DeviceInfo, playback malgo.DeviceInfo,
 
 	a.ctx = ctx
 	a.onCapturePCM = onCapturePCM
+
+	if df, err := NewDFEngine(); err != nil {
+		log.Printf("audio: deepfilter init failed, skipping: %v", err)
+	} else {
+		a.df = df
+		a.nsEnabled.Store(noiseSuppression)
+		log.Printf("audio: deepfilter ready, noise suppression enabled=%v", noiseSuppression)
+	}
 
 	if err := a.startPlayback(playback); err != nil {
 		a.Close()
@@ -189,7 +203,7 @@ func (a *AudioEngine) startCapture(capture malgo.DeviceInfo) error {
 			}
 			copyBuf := make([]byte, bytesNeeded)
 			copy(copyBuf, input[:bytesNeeded])
-			a.onCapturePCM(copyBuf)
+			a.processAndSendCapture(copyBuf)
 		},
 	}
 
@@ -264,7 +278,65 @@ func (a *AudioEngine) PushPCM16LE(payload []byte) {
 	a.mu.Unlock()
 }
 
+func (a *AudioEngine) SetLoopback(enabled bool) {
+	a.loopback.Store(enabled)
+}
+
+func (a *AudioEngine) Loopback() bool {
+	return a.loopback.Load()
+}
+
+func (a *AudioEngine) SetMicGainDB(db float64) {
+	linear := float32(math.Pow(10.0, db/20.0))
+	a.micGain.Store(math.Float32bits(linear))
+}
+
+func (a *AudioEngine) applyMicGain(pcm []byte) {
+	gainBits := a.micGain.Load()
+	if gainBits == 0 {
+		return // not initialised yet, treat as 1.0
+	}
+	gain := math.Float32frombits(gainBits)
+	if gain == 1.0 {
+		return
+	}
+	for i := 0; i+1 < len(pcm); i += 2 {
+		s := float32(int16(binary.LittleEndian.Uint16(pcm[i:]))) * gain
+		if s > 32767 {
+			s = 32767
+		} else if s < -32768 {
+			s = -32768
+		}
+		binary.LittleEndian.PutUint16(pcm[i:], uint16(int16(s)))
+	}
+}
+
+func (a *AudioEngine) SetNoiseSuppression(enabled bool) {
+	a.nsEnabled.Store(enabled)
+}
+
+func (a *AudioEngine) processAndSendCapture(stereoBytes []byte) {
+	if a.df != nil && a.nsEnabled.Load() {
+		denoised := a.df.Denoise(stereoBytes)
+		if len(denoised) > 0 {
+			a.applyMicGain(denoised)
+			a.onCapturePCM(denoised)
+			if a.loopback.Load() {
+				a.PushPCM16LE(denoised)
+			}
+		}
+		return
+	}
+	a.applyMicGain(stereoBytes)
+	a.onCapturePCM(stereoBytes)
+	if a.loopback.Load() {
+		a.PushPCM16LE(stereoBytes)
+	}
+}
+
 func (a *AudioEngine) Close() {
+	a.df.Close()
+	a.df = nil
 	if a.captureDevice != nil {
 		a.captureDevice.Stop()
 		a.captureDevice.Uninit()

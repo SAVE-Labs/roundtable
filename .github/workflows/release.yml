@@ -18,7 +18,13 @@ jobs:
           go-version-file: backend/go.mod
 
       - name: Install opus
-        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui/deep-filter-net/libDF -> target
 
       - name: Build backend
         working-directory: backend
@@ -29,6 +35,9 @@ jobs:
           CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -ldflags "$LDFLAGS" -o ../dist/roundtable-backend-linux-amd64  .
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o ../dist/roundtable-backend-darwin-arm64 .
           echo "$VERSION" > ../dist/version.txt
+
+      - name: Build libdf.a (DeepFilterNet3, model embedded)
+        run: bash tui/build_deepfilter.sh
 
       - name: Build TUI (linux/amd64)
         working-directory: tui
