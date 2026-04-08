@@ -80,6 +80,10 @@ type Model struct {
 	MicMuted        bool
 
 	VoiceActivationThresholdDB float64
+	NoiseSuppressionEnabled    bool
+	MicGainDB                  float64
+
+	SelfTest *AudioEngine // non-nil while mic self-test is active in the Audio tab
 }
 
 func New() Model {
@@ -101,6 +105,7 @@ func New() Model {
 		AudioPlaybackSelected:      -1,
 		SessionStatus:              "Not connected",
 		VoiceActivationThresholdDB: defaultVoiceActivationThresholdDB,
+		NoiseSuppressionEnabled:    true,
 	}
 }
 

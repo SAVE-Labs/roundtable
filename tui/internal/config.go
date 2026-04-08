@@ -15,13 +15,15 @@ type ServerConfig struct {
 }
 
 type AppConfig struct {
-	Version            int            `json:"version,omitempty"`
-	CaptureDeviceName  string         `json:"capture_device_name,omitempty"`
-	PlaybackDeviceName string         `json:"playback_device_name,omitempty"`
-	MicMuted           bool           `json:"mic_muted,omitempty"`
-	VoiceActivationThreshold *float64 `json:"voice_activation_threshold_db,omitempty"`
-	LastUsedServer     ServerConfig   `json:"last_used_server,omitempty"`
-	Servers            []ServerConfig `json:"servers,omitempty"`
+	Version                  int            `json:"version,omitempty"`
+	CaptureDeviceName        string         `json:"capture_device_name,omitempty"`
+	PlaybackDeviceName       string         `json:"playback_device_name,omitempty"`
+	MicMuted                 bool           `json:"mic_muted,omitempty"`
+	VoiceActivationThreshold *float64       `json:"voice_activation_threshold_db,omitempty"`
+	NoiseSuppressionEnabled  *bool          `json:"noise_suppression_enabled,omitempty"`
+	MicGainDB                *float64       `json:"mic_gain_db,omitempty"`
+	LastUsedServer           ServerConfig   `json:"last_used_server,omitempty"`
+	Servers                  []ServerConfig `json:"servers,omitempty"`
 }
 
 type ConfigLoadedMsg struct {
@@ -99,6 +101,8 @@ func (m Model) ConfigSnapshot() AppConfig {
 
 	voiceActivationThreshold := m.VoiceActivationThresholdDB
 	cfg.VoiceActivationThreshold = &voiceActivationThreshold
+	cfg.NoiseSuppressionEnabled = &m.NoiseSuppressionEnabled
+	cfg.MicGainDB = &m.MicGainDB
 
 	if m.ServerSelected >= 0 && m.ServerSelected < len(m.Servers) {
 		s := m.Servers[m.ServerSelected]

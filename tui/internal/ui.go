@@ -129,6 +129,14 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 	if cfg.VoiceActivationThreshold != nil {
 		m.VoiceActivationThresholdDB = clampVoiceActivationThresholdDB(*cfg.VoiceActivationThreshold)
 	}
+	m.NoiseSuppressionEnabled = true
+	if cfg.NoiseSuppressionEnabled != nil {
+		m.NoiseSuppressionEnabled = *cfg.NoiseSuppressionEnabled
+	}
+	m.MicGainDB = 0.0
+	if cfg.MicGainDB != nil {
+		m.MicGainDB = *cfg.MicGainDB
+	}
 	m.ServerSelected = -1
 	m.ServerCursor = 0
 	m.ServerURL = nil
@@ -478,6 +486,13 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.RoomFormErr = ""
 			return m, nil
 		}
+		if m.Tab == TabAudio {
+			return handleAudioKeys(m, msg)
+		}
+	case ",", ".":
+		if m.Tab == TabAudio {
+			return handleAudioKeys(m, msg)
+		}
 
 	case "m":
 		m.MicMuted = !m.MicMuted
@@ -811,6 +826,7 @@ func (m *Model) joinActiveChannel() error {
 	}
 
 	m.leaveChannel()
+	m.stopSelfTest()
 	m.stopMicMonitor()
 
 	roomWSURL, err := websocketURLForRoom(m.WebsocketURL, selectedChannel.ID)
@@ -842,11 +858,12 @@ func (m *Model) joinActiveChannel() error {
 	if err := engine.Start(capture, playback, func(pcm []byte) {
 		voiceActivation.ProcessPCM16LE(pcm)
 		_ = client.SendPCM16LE(pcm)
-	}); err != nil {
+	}, m.NoiseSuppressionEnabled); err != nil {
 		log.Printf("join: audio start failed capture=%s playback=%s err=%v", capture.Name(), playback.Name(), err)
 		client.Close()
 		return err
 	}
+	engine.SetMicGainDB(m.MicGainDB)
 
 	m.WebRTCClient = client
 	m.AudioEngine = engine
@@ -907,6 +924,59 @@ func handleAudioKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.SessionStatus = fmt.Sprintf("Voice activation threshold %.1f dB", m.VoiceActivationThresholdDB)
 		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case ",":
+		if m.MicGainDB > -12.0 {
+			m.MicGainDB -= 1.0
+		}
+		if m.AudioEngine != nil {
+			m.AudioEngine.SetMicGainDB(m.MicGainDB)
+		}
+		if m.SelfTest != nil {
+			m.SelfTest.SetMicGainDB(m.MicGainDB)
+		}
+		m.SessionStatus = fmt.Sprintf("Mic gain: %+.0f dB", m.MicGainDB)
+		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case ".":
+		if m.MicGainDB < 24.0 {
+			m.MicGainDB += 1.0
+		}
+		if m.AudioEngine != nil {
+			m.AudioEngine.SetMicGainDB(m.MicGainDB)
+		}
+		if m.SelfTest != nil {
+			m.SelfTest.SetMicGainDB(m.MicGainDB)
+		}
+		m.SessionStatus = fmt.Sprintf("Mic gain: %+.0f dB", m.MicGainDB)
+		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case "n":
+		m.NoiseSuppressionEnabled = !m.NoiseSuppressionEnabled
+		if m.AudioEngine != nil {
+			m.AudioEngine.SetNoiseSuppression(m.NoiseSuppressionEnabled)
+		}
+		if m.SelfTest != nil {
+			m.SelfTest.SetNoiseSuppression(m.NoiseSuppressionEnabled)
+		}
+		if m.NoiseSuppressionEnabled {
+			m.SessionStatus = "Noise suppression: on"
+		} else {
+			m.SessionStatus = "Noise suppression: off"
+		}
+		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case "L":
+		if m.SelfTest != nil {
+			m.stopSelfTest()
+			if err := m.ensureMicMonitor(); err != nil {
+				m.AudioErr = err.Error()
+			}
+			m.SessionStatus = "Mic self-test off"
+		} else {
+			if err := m.startSelfTest(); err != nil {
+				m.AudioErr = err.Error()
+			} else {
+				m.SessionStatus = "Mic self-test on — you are hearing yourself"
+			}
+		}
+		return m, nil
 	case "c":
 		m.AudioFocus = AudioFocusCapture
 	case "p":
@@ -1248,7 +1318,7 @@ func renderAudio(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Audio Devices"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ move through all devices • c capture • p playback • space to select • r reload • [/] threshold"))
+	b.WriteString(helpStyle.Render("↑/↓ devices • c/p capture/playback • space select • r reload • [/] voice threshold • ,/. mic gain • n noise suppression • L self-test"))
 	b.WriteString("\n\n")
 
 	b.WriteString(mutedStyle.Render("Voice activation: on"))
@@ -1256,6 +1326,22 @@ func renderAudio(m Model) string {
 	b.WriteString(mutedStyle.Render(fmt.Sprintf("Threshold: %.1f dBFS ([/])", m.VoiceActivationThresholdDB)))
 	b.WriteString("\n\n")
 	b.WriteString(renderVoiceActivationMeter(m))
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("Mic gain: %+.0f dB (,/.)", m.MicGainDB)))
+	b.WriteString("\n")
+	nsLabel := "on"
+	if !m.NoiseSuppressionEnabled {
+		nsLabel = "off"
+	}
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("Noise suppression: %s (n)", nsLabel)))
+	b.WriteString("\n")
+	selfTestLabel := "off"
+	selfTestStyle := mutedStyle
+	if m.SelfTest != nil {
+		selfTestLabel = "ON — you are hearing yourself"
+		selfTestStyle = selectedStyle
+	}
+	b.WriteString(selfTestStyle.Render(fmt.Sprintf("Mic self-test: %s (L)", selfTestLabel)))
 	b.WriteString("\n\n")
 
 	// Capture devices
@@ -1408,6 +1494,50 @@ func (m *Model) stopMicMonitor() {
 	}
 	m.MicMonitor.Close()
 	m.MicMonitor = nil
+}
+
+func (m *Model) startSelfTest() error {
+	m.stopSelfTest()
+	m.stopMicMonitor() // can't share the capture device
+
+	if m.AudioCaptureSelected < 0 || m.AudioCaptureSelected >= len(m.AudioCaptureDevices) {
+		return fmt.Errorf("select a capture device first")
+	}
+	if m.AudioPlaybackSelected < 0 || m.AudioPlaybackSelected >= len(m.AudioPlaybackDevices) {
+		return fmt.Errorf("select a playback device first")
+	}
+
+	engine := NewAudioEngine()
+	capture := m.AudioCaptureDevices[m.AudioCaptureSelected]
+	playback := m.AudioPlaybackDevices[m.AudioPlaybackSelected]
+
+	// Apply the same voice activation gate as the room session so DTLN artifacts
+	// during silence don't leak through to the speaker. VA modifies PCM in-place,
+	// so the loopback path automatically gets the gated output.
+	va := NewVoiceActivation(
+		audioSampleRate, audioFrameSamples,
+		m.VoiceActivationThresholdDB,
+		defaultVoiceActivationAttackMs,
+		defaultVoiceActivationReleaseMs,
+		defaultVoiceActivationHoldMs,
+	)
+	if err := engine.Start(capture, playback, func(pcm []byte) {
+		va.ProcessPCM16LE(pcm)
+	}, m.NoiseSuppressionEnabled); err != nil {
+		return err
+	}
+	engine.SetMicGainDB(m.MicGainDB)
+	engine.SetLoopback(true)
+	m.SelfTest = engine
+	return nil
+}
+
+func (m *Model) stopSelfTest() {
+	if m.SelfTest == nil {
+		return
+	}
+	m.SelfTest.Close()
+	m.SelfTest = nil
 }
 
 func meterPosition(db, minDB, maxDB float64, width int) int {
