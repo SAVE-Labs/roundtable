@@ -27,6 +27,6 @@ go.work.sum
 # env file
 .env
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Binaries for tui and backend
+tui/tui
+backend/backend

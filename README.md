@@ -63,12 +63,6 @@ From `tui/`:
 go run .
 ```
 
-## Development Notes
-
-- Backend service listens on `:1323`
-- CORS is currently permissive (`*`) for development convenience
-- Signaling currently exchanges SDP without trickle ICE
-
 ## Contributing
 
 Contributions are welcome.
