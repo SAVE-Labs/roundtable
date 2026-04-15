@@ -1379,7 +1379,7 @@ func renderServers(m Model) string {
 
 	b.WriteString(sectionTitleStyle.Render("Servers"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k move • space/enter select • a add • d delete • e rename"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k move • space/enter select • a add • d delete • e change user name • r reload"))
 	b.WriteString("\n\n")
 	b.WriteString(mutedStyle.Render("Name: " + m.DisplayName))
 	b.WriteString("\n\n")

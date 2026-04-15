@@ -1,8 +1,9 @@
 package internal
 
 import (
+	"fmt"
+	"math/rand"
 	"net/url"
-	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gen2brain/malgo"
@@ -96,11 +97,7 @@ type Model struct {
 }
 
 func New() Model {
-	hostname, err := os.Hostname()
-	displayName := "User"
-	if err == nil && hostname != "" {
-		displayName = hostname
-	}
+	displayName := fmt.Sprintf("User%d", rand.Intn(9000)+1000)
 
 	return Model{
 		ServerURL:    nil,
