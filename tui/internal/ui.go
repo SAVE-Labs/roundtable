@@ -103,6 +103,20 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ServerInfoMsg:
 		return handleServerInfo(m, msg)
 
+	case EventsConnectedMsg:
+		if m.EventsClient != nil {
+			m.EventsClient.Close()
+		}
+		m.EventsClient = msg.Client
+		return m, m.EventsClient.WaitForEvent()
+
+	case eventsDisconnectedMsg:
+		m.EventsClient = nil
+		return m, nil
+
+	case RoomEventMsg:
+		return handleRoomEvent(m, msg)
+
 	case tea.WindowSizeMsg:
 		m.WindowWidth = msg.Width
 		m.WindowHeight = msg.Height
@@ -125,6 +139,9 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 
 	cfg := msg.Config
 	m.MicMuted = cfg.MicMuted
+	if cfg.DisplayName != "" {
+		m.DisplayName = cfg.DisplayName
+	}
 	m.VoiceActivationThresholdDB = defaultVoiceActivationThresholdDB
 	if cfg.VoiceActivationThreshold != nil {
 		m.VoiceActivationThresholdDB = clampVoiceActivationThresholdDB(*cfg.VoiceActivationThreshold)
@@ -211,6 +228,7 @@ func handleConfigLoaded(m Model, msg ConfigLoadedMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		LoadDevicesCmd(),
 		LoadRoomsCmd(m.ServerURL.String()),
+		ConnectEventsCmd(m.ServerURL.String()),
 	)
 }
 
@@ -257,11 +275,29 @@ func handleRooms(m Model, msg RoomsMsg) Model {
 		}
 	}
 
-	if m.SessionStatus == "Not connected" || m.SessionStatus == "No rooms available" {
+	if m.SessionStatus == "No rooms available" && len(m.Channels) > 0 {
 		m.SessionStatus = "Rooms loaded"
 	}
 
 	return m
+}
+
+func handleRoomEvent(m Model, msg RoomEventMsg) (tea.Model, tea.Cmd) {
+	// Update member count in the room list.
+	for i := range m.Channels {
+		if m.Channels[i].ID == msg.RoomID {
+			m.Channels[i].MemberCount = len(msg.Members)
+			break
+		}
+	}
+	// Update the expanded member list if this is the active channel.
+	if m.ActiveChannel != nil && m.ActiveChannel.ID == msg.RoomID {
+		m.ActiveRoomMembers = msg.Members
+	}
+	if m.EventsClient != nil {
+		return m, m.EventsClient.WaitForEvent()
+	}
+	return m, nil
 }
 
 func handleRoomCreated(m Model, msg RoomCreatedMsg) Model {
@@ -384,6 +420,10 @@ func handleServerInfo(m Model, msg ServerInfoMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.leaveChannel()
+	if m.EventsClient != nil {
+		m.EventsClient.Close()
+		m.EventsClient = nil
+	}
 	m.ServerURL = httpURL
 	m.WebsocketURL = wsURL
 	m.ServerErr = ""
@@ -393,6 +433,7 @@ func handleServerInfo(m Model, msg ServerInfoMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		LoadRoomsCmd(m.ServerURL.String()),
 		SaveConfigCmd(m.ConfigSnapshot()),
+		ConnectEventsCmd(m.ServerURL.String()),
 	)
 }
 
@@ -440,6 +481,16 @@ func handleAudioDevices(m Model, msg DevicesMsg) (tea.Model, tea.Cmd) {
 }
 
 func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.Tab == TabServers && m.NameFormOpen {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.leaveChannel()
+			return m, tea.Quit
+		default:
+			return handleNameFormKeys(m, msg)
+		}
+	}
+
 	if m.Tab == TabChannels && m.RoomFormOpen {
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -476,7 +527,19 @@ func handleKeyPress(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, LoadDevicesCmd()
 		}
 		if m.Tab == TabChannels && m.ServerURL != nil {
-			return m, LoadRoomsCmd(m.ServerURL.String())
+			var cmds []tea.Cmd
+			cmds = append(cmds, LoadRoomsCmd(m.ServerURL.String()))
+			if m.EventsClient == nil {
+				cmds = append(cmds, ConnectEventsCmd(m.ServerURL.String()))
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+	case "e":
+		if m.Tab == TabServers {
+			m.NameFormOpen = true
+			m.NameFormValue = m.DisplayName
+			return m, nil
 		}
 
 	case "n":
@@ -552,6 +615,35 @@ func handleRoomFormKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func handleNameFormKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.NameFormOpen = false
+		m.NameFormValue = ""
+		return m, nil
+	case tea.KeyEnter:
+		name := strings.TrimSpace(m.NameFormValue)
+		if name == "" {
+			m.NameFormOpen = false
+			m.NameFormValue = ""
+			return m, nil
+		}
+		m.DisplayName = name
+		m.NameFormOpen = false
+		m.NameFormValue = ""
+		return m, SaveConfigCmd(m.ConfigSnapshot())
+	case tea.KeyBackspace, tea.KeyDelete:
+		if len(m.NameFormValue) > 0 {
+			m.NameFormValue = m.NameFormValue[:len(m.NameFormValue)-1]
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m.NameFormValue += string(msg.Runes)
+		return m, nil
+	}
+	return m, nil
+}
+
 func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.ServerFormOpen {
 		return handleServerFormKeys(m, msg)
@@ -580,6 +672,10 @@ func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		if len(m.Servers) == 0 {
 			m.leaveChannel()
+			if m.EventsClient != nil {
+				m.EventsClient.Close()
+				m.EventsClient = nil
+			}
 			m.ServerSelected = -1
 			m.ServerCursor = 0
 			m.ServerURL = nil
@@ -602,6 +698,10 @@ func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		if deletedSelected {
 			m.leaveChannel()
+			if m.EventsClient != nil {
+				m.EventsClient.Close()
+				m.EventsClient = nil
+			}
 			m.ServerSelected = m.ServerCursor
 			selected := m.Servers[m.ServerSelected]
 
@@ -625,6 +725,7 @@ func handleServerKeys(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(
 				LoadRoomsCmd(m.ServerURL.String()),
 				SaveConfigCmd(m.ConfigSnapshot()),
+				ConnectEventsCmd(m.ServerURL.String()),
 			)
 		}
 
@@ -829,7 +930,7 @@ func (m *Model) joinActiveChannel() error {
 	m.stopSelfTest()
 	m.stopMicMonitor()
 
-	roomWSURL, err := websocketURLForRoom(m.WebsocketURL, selectedChannel.ID)
+	roomWSURL, err := websocketURLForRoom(m.WebsocketURL, selectedChannel.ID, m.DisplayName)
 	if err != nil {
 		log.Printf("join: websocket url build failed room_id=%s err=%v", selectedChannel.ID, err)
 		return err
@@ -876,7 +977,7 @@ func (m *Model) joinActiveChannel() error {
 	return nil
 }
 
-func websocketURLForRoom(base *url.URL, roomID string) (string, error) {
+func websocketURLForRoom(base *url.URL, roomID, peerName string) (string, error) {
 	if base == nil {
 		return "", fmt.Errorf("websocket url not configured")
 	}
@@ -887,6 +988,9 @@ func websocketURLForRoom(base *url.URL, roomID string) (string, error) {
 	u := *base
 	q := u.Query()
 	q.Set("room", roomID)
+	if name := strings.TrimSpace(peerName); name != "" {
+		q.Set("peer_name", name)
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
@@ -902,6 +1006,7 @@ func (m *Model) leaveChannel() {
 	}
 	m.VoiceActivation = nil
 	m.ActiveChannel = nil
+	m.ActiveRoomMembers = nil
 	if err := m.ensureMicMonitor(); err != nil {
 		m.AudioErr = err.Error()
 	}
@@ -1082,6 +1187,20 @@ func View(m Model) string {
 				lipgloss.Place(contentWidth, lipgloss.Height(modal), lipgloss.Center, lipgloss.Top, modal),
 			)
 		}
+		if m.NameFormOpen {
+			modal := renderNameFormModal(m, lipgloss.Width(content))
+			contentWidth := lipgloss.Width(content)
+			modalWidth := lipgloss.Width(modal)
+			if modalWidth > contentWidth {
+				contentWidth = modalWidth
+			}
+			content = lipgloss.JoinVertical(
+				lipgloss.Left,
+				content,
+				"",
+				lipgloss.Place(contentWidth, lipgloss.Height(modal), lipgloss.Center, lipgloss.Top, modal),
+			)
+		}
 	} else {
 		content = renderAudio(m)
 	}
@@ -1162,11 +1281,10 @@ func renderChannels(m Model) string {
 			cursor = cursorStyle.Render("❯ ")
 		}
 
-		active := " "
-		if m.ActiveChannel != nil && m.ActiveChannel.ID == ch.ID {
-			active = selectedStyle.Render("● ")
-		} else {
-			active = mutedStyle.Render("○ ")
+		isActive := m.ActiveChannel != nil && m.ActiveChannel.ID == ch.ID
+		activeIndicator := mutedStyle.Render("○ ")
+		if isActive {
+			activeIndicator = selectedStyle.Render("● ")
 		}
 
 		name := ch.Name
@@ -1174,7 +1292,18 @@ func renderChannels(m Model) string {
 			name = selectedStyle.Render(name)
 		}
 
-		b.WriteString(fmt.Sprintf("%s%s%s\n", cursor, active, name))
+		memberCount := ""
+		if ch.MemberCount > 0 {
+			memberCount = mutedStyle.Render(fmt.Sprintf(" (%d)", ch.MemberCount))
+		}
+
+		b.WriteString(fmt.Sprintf("%s%s%s%s\n", cursor, activeIndicator, name, memberCount))
+
+		if isActive && len(m.ActiveRoomMembers) > 0 {
+			for _, member := range m.ActiveRoomMembers {
+				b.WriteString(fmt.Sprintf("     %s %s\n", mutedStyle.Render("↳"), mutedStyle.Render(member)))
+			}
+		}
 	}
 
 	return b.String()
@@ -1215,12 +1344,44 @@ func renderRoomFormModal(m Model, totalWidth int) string {
 	return modalStyle.Render(b.String())
 }
 
+func renderNameFormModal(m Model, totalWidth int) string {
+	var b strings.Builder
+
+	b.WriteString(sectionTitleStyle.Render("Set Display Name"))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Type name • enter save • esc cancel"))
+	b.WriteString("\n\n")
+
+	name := m.NameFormValue
+	if name == "" {
+		name = mutedStyle.Render("(required)")
+	}
+
+	b.WriteString(cursorStyle.Render("❯ Name: ") + name)
+
+	modalStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(secondaryColor).
+		Padding(1, 2)
+
+	if totalWidth > 6 {
+		contentWidth := totalWidth - 6
+		if contentWidth > lipgloss.Width(b.String()) {
+			modalStyle = modalStyle.Width(contentWidth)
+		}
+	}
+
+	return modalStyle.Render(b.String())
+}
+
 func renderServers(m Model) string {
 	var b strings.Builder
 
 	b.WriteString(sectionTitleStyle.Render("Servers"))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ or j/k move • space/enter select • a add • d delete"))
+	b.WriteString(helpStyle.Render("↑/↓ or j/k move • space/enter select • a add • d delete • e rename"))
+	b.WriteString("\n\n")
+	b.WriteString(mutedStyle.Render("Name: " + m.DisplayName))
 	b.WriteString("\n\n")
 
 	if m.ServerErr != "" {

@@ -121,6 +121,51 @@ func main() {
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
+	e.GET("/events", func(c *echo.Context) error {
+		ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+		if err != nil {
+			return err
+		}
+		defer ws.Close()
+
+		// Subscribe before snapshotting initial state so no event is missed.
+		ch := rooms.bus.subscribe()
+		defer rooms.bus.unsubscribe(ch)
+
+		// Send the current member list for every room that has active peers.
+		rooms.forEachRoom(func(room *Room) {
+			members := room.Members()
+			event := RoomEvent{Type: "members", RoomID: room.id, Members: members}
+			_ = ws.WriteJSON(event)
+		})
+
+		// Detect client disconnect via a background reader.
+		disconnected := make(chan struct{})
+		go func() {
+			defer close(disconnected)
+			for {
+				if _, _, err := ws.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+
+		// Forward events until the client disconnects or the bus closes.
+		for {
+			select {
+			case <-disconnected:
+				return nil
+			case event, ok := <-ch:
+				if !ok {
+					return nil
+				}
+				if err := ws.WriteJSON(event); err != nil {
+					return nil
+				}
+			}
+		}
+	})
+
 	e.GET("/ws", func(c *echo.Context) error {
 		roomID := c.QueryParam("room")
 		room, ok := rooms.Get(c.Request().Context(), roomID)
@@ -136,9 +181,10 @@ func main() {
 		log.Printf("Client connected: %s", c.Request().RemoteAddr)
 
 		peer := &Peer{
-			id:       uuid.New().String(),
-			ws:       ws,
-			answerCh: make(chan webrtc.SessionDescription, 1),
+			id:          uuid.New().String(),
+			displayName: c.QueryParam("peer_name"),
+			ws:          ws,
+			answerCh:    make(chan webrtc.SessionDescription, 1),
 		}
 		defer room.RemovePeer(peer.id)
 
