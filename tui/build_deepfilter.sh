@@ -35,12 +35,16 @@ echo "Building libdf.so (this takes a few minutes on first run)..."
     cd "$SRC_DIR/libDF"
     # Patch capi.rs to support empty path → embedded default model (DFN3)
     if ! grep -q "model_path.is_empty" src/capi.rs; then
-        sed -i 's/DfParams::new(PathBuf::from(model_path)).expect("Could not load model from path");/if model_path.is_empty() { DfParams::default() } else { DfParams::new(PathBuf::from(model_path)).expect("Could not load model from path") };/' src/capi.rs
+        perl -i -pe 's/DfParams::new\(PathBuf::from\(model_path\)\)\.expect\("Could not load model from path"\);/if model_path.is_empty() { DfParams::default() } else { DfParams::new(PathBuf::from(model_path)).expect("Could not load model from path") };/' src/capi.rs
     fi
     cargo build --release --lib --features capi,tract
 )
 
-LIB="$SRC_DIR/target/release/libdf.a"
+if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
+    LIB="$SRC_DIR/target/${CARGO_BUILD_TARGET}/release/libdf.a"
+else
+    LIB="$SRC_DIR/target/release/libdf.a"
+fi
 if [ ! -f "$LIB" ]; then
     echo "ERROR: Expected library not found at $LIB"
     exit 1
