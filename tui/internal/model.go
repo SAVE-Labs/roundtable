@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"fmt"
+	"math/rand"
 	"net/url"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -8,8 +10,9 @@ import (
 )
 
 type Channel struct {
-	ID   string
-	Name string
+	ID          string
+	Name        string
+	MemberCount int
 }
 
 type ServerOption struct {
@@ -79,6 +82,13 @@ type Model struct {
 	SessionStatus   string
 	MicMuted        bool
 
+	DisplayName   string
+	NameFormOpen  bool
+	NameFormValue string
+
+	EventsClient      *EventsClient
+	ActiveRoomMembers []string
+
 	VoiceActivationThresholdDB float64
 	NoiseSuppressionEnabled    bool
 	MicGainDB                  float64
@@ -87,6 +97,8 @@ type Model struct {
 }
 
 func New() Model {
+	displayName := fmt.Sprintf("User%d", rand.Intn(9000)+1000)
+
 	return Model{
 		ServerURL:    nil,
 		WebsocketURL: nil,
@@ -104,6 +116,7 @@ func New() Model {
 		AudioCaptureSelected:       -1,
 		AudioPlaybackSelected:      -1,
 		SessionStatus:              "Not connected",
+		DisplayName:                displayName,
 		VoiceActivationThresholdDB: defaultVoiceActivationThresholdDB,
 		NoiseSuppressionEnabled:    true,
 	}

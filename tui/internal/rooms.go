@@ -100,8 +100,9 @@ func LoadRoomsCmd(serverURL string) tea.Cmd {
 		}
 
 		var payload []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			MemberCount int    `json:"member_count"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 			return RoomsMsg{Err: err}
@@ -112,7 +113,7 @@ func LoadRoomsCmd(serverURL string) tea.Cmd {
 			if room.ID == "" {
 				continue
 			}
-			channels = append(channels, Channel{ID: room.ID, Name: room.Name})
+			channels = append(channels, Channel{ID: room.ID, Name: room.Name, MemberCount: room.MemberCount})
 		}
 		log.Printf("load rooms ok server=%s count=%d", serverURL, len(channels))
 

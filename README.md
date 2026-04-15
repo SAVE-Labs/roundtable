@@ -27,12 +27,11 @@ Roundtable is designed to be simple to self-host and easy to extend:
   - Anyone who can reach the server can create/list/delete rooms and join signaling.
 - No user identity or accounts yet.
   - There is currently no concept of users, profiles, or persistent user presence.
-- No participant roster in rooms.
-  - Clients cannot see who is currently connected to a room.
 - No audible feedback for mute/unmute in the TUI.
   - Mute state is visible in UI, but there is no local earcon/notification sound.
 - No room access controls.
   - Rooms are open by ID with no password, invite token, or role-based permissions.
+- No indicator who is speaking.
 - Limited production hardening.
   - Current defaults (for example permissive CORS) are development-friendly but not production-safe.
 
