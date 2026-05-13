@@ -126,6 +126,14 @@ func (g *VoiceActivation) InputLevelDB() float64 {
 	return g.inputLevelDB
 }
 
+// IsSpeaking returns true when the voice gate is currently open (speech
+// detected or within the post-speech hold window).
+func (g *VoiceActivation) IsSpeaking() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.inputLevelDB > g.thresholdDB || g.holdCounter > 0
+}
+
 func dbToLinear(db float64) float64 {
 	return math.Pow(10.0, db/20.0)
 }

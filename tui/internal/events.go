@@ -17,6 +17,13 @@ type RoomEventMsg struct {
 	Members []string
 }
 
+// SpeakingMsg is dispatched when a peer's speaking state changes.
+type SpeakingMsg struct {
+	RoomID  string
+	Peer    string
+	Speaking bool
+}
+
 // EventsConnectedMsg is returned by ConnectEventsCmd on success.
 type EventsConnectedMsg struct {
 	Client *EventsClient
@@ -30,7 +37,7 @@ type eventsDisconnectedMsg struct{}
 // can consume one-at-a-time via WaitForEvent.
 type EventsClient struct {
 	ws    *websocket.Conn
-	msgCh chan RoomEventMsg
+	msgCh chan tea.Msg
 }
 
 func (e *EventsClient) Close() {
@@ -69,7 +76,7 @@ func ConnectEventsCmd(serverURL string) tea.Cmd {
 			return eventsDisconnectedMsg{}
 		}
 
-		ch := make(chan RoomEventMsg, 64)
+		ch := make(chan tea.Msg, 64)
 		client := &EventsClient{ws: ws, msgCh: ch}
 
 		go func() {
@@ -81,28 +88,38 @@ func ConnectEventsCmd(serverURL string) tea.Cmd {
 					return
 				}
 				var event struct {
-					Type    string `json:"type"`
-					RoomID  string `json:"room_id"`
-					Members []struct {
+					Type             string `json:"type"`
+					RoomID           string `json:"room_id"`
+					Members          []struct {
 						ID   string `json:"id"`
 						Name string `json:"name"`
 					} `json:"members"`
+					SpeakingPeerName string `json:"speaking_peer_name"`
+					IsSpeaking       bool   `json:"is_speaking"`
 				}
 				if err := json.Unmarshal(raw, &event); err != nil {
 					log.Printf("events: decode failed err=%v", err)
 					continue
 				}
-				if event.Type != "members" {
-					continue
-				}
-				names := make([]string, 0, len(event.Members))
-				for _, m := range event.Members {
-					names = append(names, m.Name)
-				}
-				select {
-				case ch <- RoomEventMsg{RoomID: event.RoomID, Members: names}:
+				switch event.Type {
+				case "members":
+					names := make([]string, 0, len(event.Members))
+					for _, m := range event.Members {
+						names = append(names, m.Name)
+					}
+					select {
+					case ch <- RoomEventMsg{RoomID: event.RoomID, Members: names}:
+					default:
+						log.Printf("events: dropped members event for room=%s (channel full)", event.RoomID)
+					}
+				case "speaking":
+					select {
+					case ch <- SpeakingMsg{RoomID: event.RoomID, Peer: event.SpeakingPeerName, Speaking: event.IsSpeaking}:
+					default:
+						log.Printf("events: dropped speaking event for room=%s peer=%s (channel full)", event.RoomID, event.SpeakingPeerName)
+					}
 				default:
-					log.Printf("events: dropped event for room=%s (channel full)", event.RoomID)
+					log.Printf("events: unknown event type=%s", event.Type)
 				}
 			}
 		}()

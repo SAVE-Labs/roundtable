@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -189,23 +190,50 @@ func main() {
 		defer room.RemovePeer(peer.id)
 
 		for {
-			var sdp webrtc.SessionDescription
-			if err := ws.ReadJSON(&sdp); err != nil {
+			_, rawMsg, err := ws.ReadMessage()
+			if err != nil {
 				log.Printf("Connection closed: %v", err)
 				return nil
 			}
 
-			switch sdp.Type {
-			case webrtc.SDPTypeOffer:
-				answer, err := handleWebRTCOffer(sdp, room, peer)
-				if err != nil {
-					log.Printf("Error processing offer: %v", err)
-					ws.WriteJSON(map[string]string{"error": "Failed to process offer"})
+			var typeProbe struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rawMsg, &typeProbe); err != nil {
+				log.Printf("Failed to parse message type: %v", err)
+				continue
+			}
+
+			switch typeProbe.Type {
+			case "offer", "answer":
+				var sdp webrtc.SessionDescription
+				if err := json.Unmarshal(rawMsg, &sdp); err != nil {
+					log.Printf("Failed to decode SDP: %v", err)
 					continue
 				}
-				ws.WriteJSON(answer)
-			case webrtc.SDPTypeAnswer:
-				peer.answerCh <- sdp
+				switch sdp.Type {
+				case webrtc.SDPTypeOffer:
+					answer, err := handleWebRTCOffer(sdp, room, peer)
+					if err != nil {
+						log.Printf("Error processing offer: %v", err)
+						ws.WriteJSON(map[string]string{"error": "Failed to process offer"})
+						continue
+					}
+					ws.WriteJSON(answer)
+				case webrtc.SDPTypeAnswer:
+					peer.answerCh <- sdp
+				}
+			case "speaking":
+				var msg struct {
+					IsSpeaking bool `json:"is_speaking"`
+				}
+				if err := json.Unmarshal(rawMsg, &msg); err != nil {
+					log.Printf("Failed to decode speaking message: %v", err)
+					continue
+				}
+				room.SetSpeaking(peer.id, msg.IsSpeaking)
+			default:
+				log.Printf("Unknown message type: %q", typeProbe.Type)
 			}
 		}
 	})
