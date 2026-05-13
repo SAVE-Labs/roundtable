@@ -32,9 +32,11 @@ type RoomInfo struct {
 }
 
 type RoomEvent struct {
-	Type    string     `json:"type"`
-	RoomID  string     `json:"room_id"`
-	Members []PeerInfo `json:"members"`
+	Type             string     `json:"type"`
+	RoomID           string     `json:"room_id"`
+	Members          []PeerInfo `json:"members"`
+	SpeakingPeerName string     `json:"speaking_peer_name,omitempty"`
+	IsSpeaking       bool       `json:"is_speaking,omitempty"`
 }
 
 type EventBus struct {
@@ -146,6 +148,34 @@ func (r *Room) Members() []PeerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.membersLocked()
+}
+
+func (r *Room) SetSpeaking(peerID string, speaking bool) {
+	r.mu.RLock()
+	p, ok := r.peers[peerID]
+	var name string
+	if ok {
+		name = p.displayName
+		if name == "" {
+			if len(p.id) >= 8 {
+				name = p.id[:8]
+			} else {
+				name = p.id
+			}
+		}
+	}
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	if r.bus != nil {
+		r.bus.publish(RoomEvent{
+			Type:             "speaking",
+			RoomID:           r.id,
+			SpeakingPeerName: name,
+			IsSpeaking:       speaking,
+		})
+	}
 }
 
 type RoomRegistry struct {
