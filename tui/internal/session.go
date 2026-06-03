@@ -655,6 +655,18 @@ func (c *WebRTCClient) SendPCM16LE(pcmBytes []byte) error {
 	return nil
 }
 
+func (c *WebRTCClient) SendSpeakingStatus(speaking bool) {
+	msg := struct {
+		Type       string `json:"type"`
+		IsSpeaking bool   `json:"is_speaking"`
+	}{Type: "speaking", IsSpeaking: speaking}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	_ = c.sendSignalingBytes(b)
+}
+
 func (c *WebRTCClient) SetMuted(muted bool) {
 	c.muted.Store(muted)
 }

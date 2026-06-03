@@ -117,13 +117,38 @@ func Update(m Model, msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RoomEventMsg:
 		return handleRoomEvent(m, msg)
 
+	case SpeakingMsg:
+		return handleSpeakingEvent(m, msg)
+
 	case tea.WindowSizeMsg:
 		m.WindowWidth = msg.Width
 		m.WindowHeight = msg.Height
 		return m, nil
 
 	case meterTickMsg:
-		return m, meterTickCmd()
+		cmds := []tea.Cmd{meterTickCmd()}
+		if m.VoiceActivation != nil && m.WebRTCClient != nil {
+			speaking := m.VoiceActivation.IsSpeaking()
+			if speaking != m.LocalSpeaking {
+				m.LocalSpeaking = speaking
+				// Optimistic local update so the UI reacts immediately.
+				if m.SpeakingPeers == nil {
+					m.SpeakingPeers = make(map[string]bool)
+				}
+				if speaking {
+					m.SpeakingPeers[m.DisplayName] = true
+				} else {
+					delete(m.SpeakingPeers, m.DisplayName)
+				}
+				client := m.WebRTCClient
+				isSpeaking := speaking
+				cmds = append(cmds, func() tea.Msg {
+					client.SendSpeakingStatus(isSpeaking)
+					return nil
+				})
+			}
+		}
+		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
 		return handleKeyPress(m, msg)
@@ -293,6 +318,35 @@ func handleRoomEvent(m Model, msg RoomEventMsg) (tea.Model, tea.Cmd) {
 	// Update the expanded member list if this is the active channel.
 	if m.ActiveChannel != nil && m.ActiveChannel.ID == msg.RoomID {
 		m.ActiveRoomMembers = msg.Members
+		// Prune speaking state for peers that have left.
+		if m.SpeakingPeers != nil {
+			current := make(map[string]bool, len(msg.Members))
+			for _, name := range msg.Members {
+				current[name] = true
+			}
+			for name := range m.SpeakingPeers {
+				if !current[name] {
+					delete(m.SpeakingPeers, name)
+				}
+			}
+		}
+	}
+	if m.EventsClient != nil {
+		return m, m.EventsClient.WaitForEvent()
+	}
+	return m, nil
+}
+
+func handleSpeakingEvent(m Model, msg SpeakingMsg) (tea.Model, tea.Cmd) {
+	if m.ActiveChannel != nil && m.ActiveChannel.ID == msg.RoomID {
+		if m.SpeakingPeers == nil {
+			m.SpeakingPeers = make(map[string]bool)
+		}
+		if msg.Speaking {
+			m.SpeakingPeers[msg.Peer] = true
+		} else {
+			delete(m.SpeakingPeers, msg.Peer)
+		}
 	}
 	if m.EventsClient != nil {
 		return m, m.EventsClient.WaitForEvent()
@@ -1007,6 +1061,8 @@ func (m *Model) leaveChannel() {
 	m.VoiceActivation = nil
 	m.ActiveChannel = nil
 	m.ActiveRoomMembers = nil
+	m.SpeakingPeers = nil
+	m.LocalSpeaking = false
 	if err := m.ensureMicMonitor(); err != nil {
 		m.AudioErr = err.Error()
 	}
@@ -1301,7 +1357,14 @@ func renderChannels(m Model) string {
 
 		if isActive && len(m.ActiveRoomMembers) > 0 {
 			for _, member := range m.ActiveRoomMembers {
-				b.WriteString(fmt.Sprintf("     %s %s\n", mutedStyle.Render("↳"), mutedStyle.Render(member)))
+				if m.SpeakingPeers[member] {
+					b.WriteString(fmt.Sprintf("     %s %s %s\n",
+						mutedStyle.Render("↳"),
+						selectedStyle.Render("▶"),
+						member))
+				} else {
+					b.WriteString(fmt.Sprintf("     %s   %s\n", mutedStyle.Render("↳"), mutedStyle.Render(member)))
+				}
 			}
 		}
 	}

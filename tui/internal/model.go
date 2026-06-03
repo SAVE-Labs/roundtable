@@ -88,6 +88,8 @@ type Model struct {
 
 	EventsClient      *EventsClient
 	ActiveRoomMembers []string
+	SpeakingPeers     map[string]bool
+	LocalSpeaking     bool
 
 	VoiceActivationThresholdDB float64
 	NoiseSuppressionEnabled    bool
