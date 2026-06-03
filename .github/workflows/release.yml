@@ -154,6 +154,9 @@ jobs:
           mkdir -p ../dist
           CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=${VERSION}" -o ../dist/roundtable-tui-windows-amd64.exe .
 
+      - name: Smoke test TUI (windows/amd64)
+        run: dist\roundtable-tui-windows-amd64.exe --smoke-test
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-windows
