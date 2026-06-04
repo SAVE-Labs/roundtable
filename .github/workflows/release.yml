@@ -93,9 +93,22 @@ jobs:
       - name: Build TUI (darwin/arm64)
         working-directory: tui
         run: |
+          # Create static pkg-config overrides so the binary doesn't depend on
+          # Homebrew-installed dylibs at runtime — users don't need Homebrew.
+          OPUS=$(brew --prefix opus)
+          OPUSFILE=$(brew --prefix opusfile)
+          OGG=$(brew --prefix libogg)
+          mkdir -p /tmp/static-pc
+          printf "Name: opus\nVersion: 1.5\nLibs: $OPUS/lib/libopus.a\nCflags: -I$OPUS/include/opus\n" \
+            > /tmp/static-pc/opus.pc
+          printf "Name: opusfile\nVersion: 0.12\nLibs: $OPUSFILE/lib/libopusfile.a $OGG/lib/libogg.a $OPUS/lib/libopus.a\nCflags: -I$OPUSFILE/include\n" \
+            > /tmp/static-pc/opusfile.pc
+
           VERSION="main-$(git rev-parse --short HEAD)"
           mkdir -p ../dist
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${VERSION}" -o ../dist/roundtable-tui-darwin-arm64 .
+          PKG_CONFIG_PATH=/tmp/static-pc \
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+          go build -ldflags "-X main.version=${VERSION}" -o ../dist/roundtable-tui-darwin-arm64 .
 
       - name: Smoke test TUI (darwin/arm64)
         run: dist/roundtable-tui-darwin-arm64 --smoke-test
