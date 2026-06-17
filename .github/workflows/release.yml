@@ -69,7 +69,7 @@ jobs:
           go-version-file: backend/go.mod
 
       - name: Install opus
-        run: brew install opus opusfile
+        run: brew install opus opusfile && brew install libogg --build-from-source
 
       - name: Cache libdf.a
         id: cache-libdf
@@ -90,33 +90,42 @@ jobs:
         if: steps.cache-libdf.outputs.cache-hit != 'true'
         run: bash tui/build_deepfilter.sh
 
+      - name: Force static opus linking
+        run: |
+          # Remove dylibs so the linker is forced to use the static .a files.
+          # This makes the binary self-contained — users don't need Homebrew.
+          rm -f "$(brew --prefix opus)/lib/"libopus*.dylib
+          rm -f "$(brew --prefix opusfile)/lib/"libopusfile*.dylib
+          rm -f "$(brew --prefix libogg)/lib/"libogg*.dylib
+
       - name: Build TUI (darwin/arm64)
         working-directory: tui
         run: |
-          # Create static pkg-config overrides so the binary doesn't depend on
-          # Homebrew-installed dylibs at runtime — users don't need Homebrew.
-          OPUS=$(brew --prefix opus)
-          OPUSFILE=$(brew --prefix opusfile)
-          OGG=$(brew --prefix libogg)
-          mkdir -p /tmp/static-pc
-          printf "Name: opus\nVersion: 1.5\nLibs: $OPUS/lib/libopus.a\nCflags: -I$OPUS/include/opus\n" \
-            > /tmp/static-pc/opus.pc
-          printf "Name: opusfile\nVersion: 0.12\nLibs: $OPUSFILE/lib/libopusfile.a $OGG/lib/libogg.a $OPUS/lib/libopus.a\nCflags: -I$OPUSFILE/include\n" \
-            > /tmp/static-pc/opusfile.pc
-
           VERSION="main-$(git rev-parse --short HEAD)"
           mkdir -p ../dist
-          PKG_CONFIG_PATH=/tmp/static-pc \
+          OGG_LIB="$(brew --prefix libogg)/lib"
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+          CGO_LDFLAGS="-L$OGG_LIB -logg" \
           go build -ldflags "-X main.version=${VERSION}" -o ../dist/roundtable-tui-darwin-arm64 .
-
-      - name: Smoke test TUI (darwin/arm64)
-        run: dist/roundtable-tui-darwin-arm64 --smoke-test
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-macos
           path: dist/
+
+  smoke-test-macos:
+    needs: build-macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/
+
+      - name: Smoke test TUI (darwin/arm64)
+        run: |
+          chmod +x dist/roundtable-tui-darwin-arm64
+          dist/roundtable-tui-darwin-arm64 --smoke-test
 
   build-windows:
     runs-on: windows-latest
@@ -155,29 +164,47 @@ jobs:
       - name: Install opus (MinGW64)
         run: C:\msys64\usr\bin\bash -lc "pacman -S --noconfirm mingw-w64-x86_64-pkgconf mingw-w64-x86_64-opus mingw-w64-x86_64-opusfile"
 
+      - name: Force static opus linking
+        shell: bash
+        run: |
+          # Remove import libraries (.dll.a) so the linker uses the static .a archives.
+          # Removing the DLLs from bin/ doesn't affect the linker — it uses lib/*.dll.a.
+          rm -f /c/msys64/mingw64/lib/libopus.dll.a
+          rm -f /c/msys64/mingw64/lib/libopusfile.dll.a
+          rm -f /c/msys64/mingw64/lib/libogg.dll.a
+
       - name: Build TUI (windows/amd64)
         shell: bash
         working-directory: tui
         env:
           PKG_CONFIG: C:\msys64\mingw64\bin\pkg-config.exe
           PKG_CONFIG_PATH: C:\msys64\mingw64\lib\pkgconfig
-          CGO_LDFLAGS: -LC:\msys64\mingw64\lib
+          CGO_LDFLAGS: -LC:\msys64\mingw64\lib -logg -static-libgcc
         run: |
           VERSION="main-$(git rev-parse --short HEAD)"
           mkdir -p ../dist
           CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=${VERSION}" -o ../dist/roundtable-tui-windows-amd64.exe .
-
-      - name: Smoke test TUI (windows/amd64)
-        shell: bash
-        run: PATH="/c/msys64/mingw64/bin:$PATH" dist/roundtable-tui-windows-amd64.exe --smoke-test
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-windows
           path: dist/
 
+  smoke-test-windows:
+    needs: build-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/
+
+      - name: Smoke test TUI (windows/amd64)
+        shell: bash
+        run: dist/roundtable-tui-windows-amd64.exe --smoke-test
+
   release:
-    needs: [build-linux, build-macos, build-windows]
+    needs: [build-linux, build-macos, smoke-test-macos, build-windows, smoke-test-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
