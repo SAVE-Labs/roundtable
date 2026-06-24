@@ -5,7 +5,7 @@ go 1.25.7
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/labstack/echo/v5 v5.0.3
 	github.com/pion/interceptor v0.1.43
 	github.com/pion/webrtc/v4 v4.2.4
